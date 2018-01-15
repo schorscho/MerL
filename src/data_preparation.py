@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import spacy
 from spacy.tokenizer import Tokenizer
+from sklearn.model_selection import StratifiedShuffleSplit
 from mercari_config import MercariConfig
 
 
@@ -20,50 +21,35 @@ def save_data(data, file_name):
     data.to_csv(path_or_buf=os.path.join(MercariConfig.DATASETS_DIR, file_name))
 
 
-def load_word2index(max_words_from_index):
-    word2index = pd.read_csv(filepath_or_buffer=os.path.join(MercariConfig.DATASETS_DIR, MercariConfig.WORD_2_INDEX_FILE), 
+def split_data(X, y, size1):
+    split = StratifiedShuffleSplit(n_splits=1, train_size=size1, random_state=None)
+ 
+    for index1, index2 in split.split(X, y):
+        if isinstance(X, pd.DataFrame):
+            X1 = X.iloc[index1]
+            y1 = y[index1]
+            X2 = X.iloc[index2]
+            y2 = y[index2]
+        else:
+            X1 = X[index1]
+            y1 = y[index1]
+            X2 = X[index2]
+            y2 = y[index2]
+
+    return X1, y1, X2, y2
+
+        
+def load_word2index(file_name, max_words_from_index=None):
+    word2index = pd.read_csv(filepath_or_buffer=os.path.join(MercariConfig.DATASETS_DIR, file_name), 
                         header=0, index_col=['word'])
 
     word2index_h = word2index.sort_values(by='count', ascending=False).head(max_words_from_index)
-    word2index = word2index_h.append(word2index.loc[word2index['word_id'] < 4])
-    
-    return word2index
+
+    for index in word2index[word2index['word_id'] < MercariConfig.WORD_I].index:
+        word2index_h.loc[index] = word2index.loc[index]
+
+    return word2index_h
 
 
-def index_item_desc(data, max_words_item_desc, word2index):
-    progress = 0
-
-    nlp = spacy.load('en')
-    tokenizer = Tokenizer(nlp.vocab)
-
-    data_len = len(data)
-
-    word_seq = np.zeros(shape=(data_len, max_words_item_desc + 1), dtype=int)
-    row_i = 0
-
-    for desc in data.item_description:
-        desc_doc = tokenizer(desc)
-        seq_i = 1
-
-        word_seq[row_i][0] = MercariConfig.START_I # <START>
-
-        for token in desc_doc:
-            if token.text in word2index.index:
-                word_seq[row_i][seq_i] = word2index.at[token.text, 'word_id']
-            else:
-                word_seq[row_i][seq_i] = MercariConfig.OOV_I # <OOV>
-
-            seq_i += 1
-
-        row_i += 1
-
-        progress += 1
-
-        if progress % 100:
-            print("Progress: %3.2f" % (progress * 100.0 / data_len))
-
-    data = pd.concat([data.index.to_series(), pd.DataFrame(word_seq)], axis=1)
-
-    data.set_index(['train_id'], inplace=True)
-
-    return data
+def save_word2index(word2index, file_name):
+    word2index.to_csv(path_or_buf=os.path.join(MercariConfig.DATASETS_DIR, file_name))   
