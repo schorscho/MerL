@@ -1,4 +1,5 @@
 import os
+import logging.config
 from datetime import datetime
 
 
@@ -36,8 +37,8 @@ class MercariConfig:
     NON_ENTITY_TYPE = '___NONE_ENTITY___'
     
     MAX_WORDS_FROM_INDEX_4_ITEM_DESC = 40000
-    MAX_WORDS_FROM_INDEX_4_NAME = 40000
-    MAX_WORDS_IN_ITEM_DESC = 300
+    MAX_WORDS_FROM_INDEX_4_NAME = 31000
+    MAX_WORDS_IN_ITEM_DESC = 500
     MAX_WORDS_IN_NAME = 20
 
     
@@ -47,3 +48,7 @@ class MercariConfig:
         log_dir = "{}/run-{}/".format(Config.TF_LOG_DIR, now)
 
         return log_dir
+    
+
+logging.config.fileConfig('logging.conf')
+    

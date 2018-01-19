@@ -1,13 +1,14 @@
 import os
-import operator
+import logging
 
 import pandas as pd
 import numpy as np
-import spacy
-from spacy.tokenizer import Tokenizer
 from sklearn.model_selection import StratifiedShuffleSplit
 
 from mercari_config import MercariConfig
+
+
+logger = logging.getLogger('MerL.data_preparation')
 
 
 def load_data(file_name, head=None):
@@ -41,123 +42,49 @@ def split_data(X, y, train_size, val_size):
 
     return X_t, y_t, X_v, y_v
 
-        
-def load_word2index(file_name, max_words_from_index=None):
-    word2index = pd.read_csv(filepath_or_buffer=os.path.join(MercariConfig.DATASETS_DIR, file_name), 
-                        header=0, index_col=['word'])
 
-    word2index_h = word2index.sort_values(by='count', ascending=False).head(max_words_from_index)
+def main():
+    logger.info("Starting initial data preparation ...")
+    logger.info("Loading initial training data ...")
 
-    for index in word2index[word2index['word_id'] < MercariConfig.WORD_I].index:
-        word2index_h.loc[index] = word2index.loc[index]
+    df = load_data(MercariConfig.TRAINING_SET_FILE)
 
-    return word2index_h
+    logger.info("Filling missing values ...")
 
+    df['category_name'].fillna(value=MercariConfig.EMPTY_CAT, inplace=True)
 
-def save_word2index(word2index, file_name):
-    word2index.to_csv(path_or_buf=os.path.join(MercariConfig.DATASETS_DIR, file_name))   
+    assert(len(df[df.category_name.isnull()]) == 0)
+
+    df['brand_name'].fillna(value=MercariConfig.EMPTY_BRAND, inplace=True)
+
+    assert(len(df[df.brand_name.isnull()]) == 0)
+
+    df['item_description'].fillna(value=MercariConfig.EMPTY_DESC, inplace=True)
+
+    assert(len(df[df.item_description.isnull()]) == 0)
+
+    df['name'].fillna(value=MercariConfig.EMPTY_NAME, inplace=True)
+
+    assert(len(df[df.name.isnull()]) == 0)
+
+    bins = np.linspace(df.price.min(), 1000, 10)
+
+    logger.info("Splitting prepared data ...")
+
+    train_data,_,val_data,_ = split_data(X=df, y=np.digitize(df.price, bins), train_size=0.16, val_size=0.04)
+
+    logger.info("Saving prepared training data ...")
+
+    save_data(train_data, MercariConfig.TRAINING_SET_PREP_FILE)
+
+    logger.info("Saving prepared validation data ...")
+
+    save_data(val_data, MercariConfig.VALIDATION_SET_PREP_FILE)
+
+    logger.info("Initial data preparation done.")
+
     
-
-def walk_tokens(doc, word, start, end):
-    tok_len = 0
-    
-    for i in range(start, end):
-        tok = doc[i]
-
-        if not tok.text in word:
-            word[tok.text] = [1, MercariConfig.NON_ENTITY_TYPE]
-        else:
-            word[tok.text][0] += 1
-
-        tok_len += 1
-        
-        #print('Token:', tok.text, tok.i)
-        
-    return tok_len
+if __name__ == "__main__":
+    main()
 
 
-def walk_items(items, nlp, word):
-    progress = 0
-    set_len = len(items)
-
-    max_item_len = 0
-
-    for item in items:
-        doc = nlp(item)
-        tok_cnt = len(doc)
-        ent_cnt = len(doc.ents)    
-        item_len = 0
-        tok_i = 0
-
-        #print (doc.ents)
-        #print (doc)
-
-        for ent in doc.ents:
-            item_len += walk_tokens(doc, word, tok_i, ent.start)
-
-            tok_i = ent.end
-
-            if not ent.text in word:
-                word[ent.text] = [1, ent.label_]
-            else:
-                word[ent.text][0] += 1
-
-            item_len += 1
-            
-            #print('Entity:', ent.text, ent.start, ent.end, ent.label_)
-
-        item_len += walk_tokens(doc, word, tok_i, tok_cnt)
-
-        max_item_len = item_len if max_item_len < item_len else max_item_len
-
-        progress += 1
-
-        if not progress % 1000:
-            print("Progress: %3.2f" % (progress * 100.0 / set_len))
-    
-    return max_item_len
-
-
-def init_word_dict():
-    word = {}
-    init = [0, MercariConfig.NON_ENTITY_TYPE]
-
-    word[MercariConfig.PAD] = list(init)
-    word[MercariConfig.START] = list(init)
-    word[MercariConfig.OOV] = list(init)
-    word[MercariConfig.REMOVED_PRICE] = list(init)
-    word[MercariConfig.EMPTY_NAME] = list(init)
-    word[MercariConfig.EMPTY_CAT] = list(init)
-    word[MercariConfig.EMPTY_BRAND] = list(init)
-    word[MercariConfig.EMPTY_DESC] = list(init)
-    
-    return word
-
-
-def build_word2index(word):
-    word2index = pd.Series(word)
-    word2index = word2index.reset_index()
-
-    word2index['word_id'] = [i for i in range(MercariConfig.WORD_I, len(word) + MercariConfig.WORD_I)]
-
-    word2index.columns = ['word', 'comp', 'word_id']
-
-    word2index.set_index(['word'], inplace=True)
-
-    word2index = word2index[['word_id', 'comp']]
-
-    word2index.at[MercariConfig.PAD, 'word_id'] = MercariConfig.PAD_I
-    word2index.at[MercariConfig.START, 'word_id'] = MercariConfig.START_I
-    word2index.at[MercariConfig.OOV, 'word_id'] = MercariConfig.OOV_I
-    word2index.at[MercariConfig.REMOVED_PRICE, 'word_id'] = MercariConfig.REMOVED_PRICE_I
-    word2index.at[MercariConfig.EMPTY_NAME, 'word_id'] = MercariConfig.EMPTY_NAME_I
-    word2index.at[MercariConfig.EMPTY_CAT, 'word_id'] = MercariConfig.EMPTY_CAT_I
-    word2index.at[MercariConfig.EMPTY_BRAND, 'word_id'] = MercariConfig.EMPTY_BRAND_I
-    word2index.at[MercariConfig.EMPTY_DESC, 'word_id'] = MercariConfig.EMPTY_DESC_I
-
-    word2index['count'] = word2index['comp'].map(operator.itemgetter(0))
-    word2index['entity_type'] = word2index['comp'].map(operator.itemgetter(1))
-
-    word2index = word2index[['word_id', 'entity_type', 'count']].sort_values(by='word_id')    
-
-    return word2index
