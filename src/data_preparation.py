@@ -1,3 +1,4 @@
+import sys
 import os
 import logging
 
@@ -11,9 +12,16 @@ from mercari_config import MercariConfig
 logger = logging.getLogger('MerL.data_preparation')
 
 
-def load_data(file_name, head=None):
+def load_data(file_name, test=False, head=None):
+    if test:
+        index_col = 'test_id'
+    else:
+        index_col = 'train_id'
+    
     data = pd.read_csv(filepath_or_buffer=os.path.join(MercariConfig.DATASETS_DIR, file_name), 
-                            header=0, index_col=['train_id'])
+                            header=0, index_col=[index_col])
+    
+    data.sort_index(inplace=True)
     
     if head != None:
         data = data.head(head)
@@ -42,13 +50,7 @@ def split_data(X, y, train_size, val_size):
 
     return X_t, y_t, X_v, y_v
 
-
-def main():
-    logger.info("Starting initial data preparation ...")
-    logger.info("Loading initial training data ...")
-
-    df = load_data(MercariConfig.TRAINING_SET_FILE)
-
+def prepare_data(df):
     logger.info("Filling missing values ...")
 
     df['category_name'].fillna(value=MercariConfig.EMPTY_CAT, inplace=True)
@@ -67,21 +69,70 @@ def main():
 
     assert(len(df[df.name.isnull()]) == 0)
 
-    bins = np.linspace(df.price.min(), 1000, 10)
+    logger.info("Filling missing values done.")
 
-    logger.info("Splitting prepared data ...")
 
-    train_data,_,val_data,_ = split_data(X=df, y=np.digitize(df.price, bins), train_size=0.16, val_size=0.04)
+def execute_full_data_preparation(include_train=True, include_test=False):
+    logger.info("Starting initial data preparation ...")
 
-    logger.info("Saving prepared training data ...")
+    if include_train:
+        logger.info("Loading initial training data ...")
 
-    save_data(train_data, MercariConfig.TRAINING_SET_PREP_FILE)
+        df_train = load_data(MercariConfig.TRAINING_SET_FILE)
+        
+        logger.info("Preparing training data ...")
 
-    logger.info("Saving prepared validation data ...")
+        prepare_data(df_train)
+        
+        logger.info("Preparing training data done.")
 
-    save_data(val_data, MercariConfig.VALIDATION_SET_PREP_FILE)
+        logger.info("Splitting prepared training data ...")
 
-    logger.info("Initial data preparation done.")
+        bins = np.linspace(df.price.min(), 1000, 10)
+
+        train_data,_,val_data,_ = split_data(X=df, y=np.digitize(df.price, bins), train_size=0.16, val_size=0.04)
+
+        logger.info("Saving prepared training data ...")
+
+        save_data(train_data, MercariConfig.TRAINING_SET_PREP_FILE)
+
+        logger.info("Saving prepared validation data ...")
+
+        save_data(val_data, MercariConfig.VALIDATION_SET_PREP_FILE)
+
+    if include_test:
+        logger.info("Loading initial test data ...")
+
+        df_test = load_data(MercariConfig.TEST_SET_FILE, test=True)
+        
+        logger.info("Preparing test data ...")
+
+        prepare_data(df_test)
+
+        logger.info("Preparing test data done.")
+        logger.info("Saving prepared test data ...")
+
+        save_data(df_test, MercariConfig.TEST_SET_PREP_FILE)
+
+        logger.info("Saving prepared test data done.")
+
+    logger.info("Initial data preparation done.")    
+    
+
+def main():
+    b_train = False
+    b_test = False
+    
+    for arg in sys.argv[1:]:
+        if arg == 'training':
+            b_train = True
+        elif arg == 'test':
+            b_test = True
+    
+    if (not b_train and not b_test):
+        b_train = True
+        
+    execute_full_data_preparation(include_train=b_train, include_test=b_test)
 
     
 if __name__ == "__main__":

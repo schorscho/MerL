@@ -6,14 +6,17 @@ from datetime import datetime
 class MercariConfig:
     ROOT_DIR = "/home/ubuntu"
     #ROOT_DIR = "/Users/gopora/MyStuff/Dev/Workspaces"
-    PROJECT_ROOT_DIR = os.path.join(ROOT_DIR, "Mercari")
+    PROJECT_ROOT_DIR = os.path.join(ROOT_DIR, "MerL")
     DATASETS_DIR = os.path.join(ROOT_DIR, "data")
     TF_LOG_DIR = os.path.join(PROJECT_ROOT_DIR, "tf_logs")
+    MODEL_DIR = os.path.join(PROJECT_ROOT_DIR, "models")
     TRAINING_SET_FILE = "mercari_train.csv"
     WORD_2_INDEX_4_ITEM_DESC_FILE = "mercari_word_2_index_4_item_desc.csv"
     WORD_2_INDEX_4_NAME_FILE = "mercari_word_2_index_4_name.csv"
     TRAINING_SET_PREP_FILE = "mercari_train_prep.csv"
     VALIDATION_SET_PREP_FILE = "mercari_val_prep.csv"
+    TEST_SET_FILE = "mercari_test.csv"
+    TEST_SET_PREP_FILE = "mercari_test_prep.csv"
 
     PAD = '___PAD___'
     START = '___START___'
@@ -45,7 +48,7 @@ class MercariConfig:
     @staticmethod
     def get_new_tf_log_dir():
         now = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-        log_dir = "{}/run-{}/".format(Config.TF_LOG_DIR, now)
+        log_dir = "{}/run-{}/".format(MercariConfig.TF_LOG_DIR, now)
 
         return log_dir
     

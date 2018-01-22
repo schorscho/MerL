@@ -56,7 +56,7 @@ def categorize_column(data, category, category2index):
 
             
             
-def execute_full_categorization(include_train, include_val, include_category, include_brand):
+def execute_full_categorization(include_train, include_val, include_test, include_category, include_brand):
     logger.info("Starting categorization ...")
 
     cat2i_cat = 0
@@ -77,6 +77,12 @@ def execute_full_categorization(include_train, include_val, include_category, in
         data = mdp.load_data(MercariConfig.VALIDATION_SET_PREP_FILE)
         val_data = {'data': data, 'file': MercariConfig.VALIDATION_SET_PREP_FILE}
 
+    if include_test:
+        logger.info("Loading prepared test data ...")
+
+        data = mdp.load_data(MercariConfig.TEST_SET_PREP_FILE, test=True)
+        test_data = {'data': data, 'file': MercariConfig.TEST_SET_PREP_FILE}
+
     if include_category:
         logger.info("Building category2index for category ...")
         
@@ -89,7 +95,7 @@ def execute_full_categorization(include_train, include_val, include_category, in
         cat2i = build_category2index(data=cat_data_src, category='brand')
         cat2i_brand = {'cat2i': cat2i, 'category': 'brand'}
 
-    for data in [train_data, val_data]:
+    for data in [train_data, val_data, test_data]:
         if data != 0:
             for cat2i in [cat2i_cat, cat2i_brand]:
                 if cat2i != 0:
@@ -109,6 +115,7 @@ def main():
     b_br = False
     b_train = False
     b_val = False
+    b_test = False
     
     for arg in sys.argv[1:]:
         if arg == 'category':
@@ -119,14 +126,20 @@ def main():
             b_train = True
         elif arg == 'validation':
             b_val = True
+        elif arg == 'test':
+            b_test = True
     
     if (not b_br and not b_cat):
         b_cat = True
+        b_br = True
 
-    if (not b_train and not b_val):
+    if (not b_train and not b_val and not b_test):
         b_train = True
+        b_val = True
+        b_test = True
+
         
-    execute_full_categorization(include_train=b_train, include_val=b_val, 
+    execute_full_categorization(include_train=b_train, include_val=b_val, include_test = b_test,
                                 include_category=b_cat, include_brand=b_br)
 
     

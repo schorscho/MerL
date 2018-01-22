@@ -80,7 +80,7 @@ def walk_tokens_4_indexation(data, index, doc, word2index, seq_i, start, end, in
     return seq_i
 
 
-def execute_full_nl_indexation(include_train, include_val, include_name, include_item_description):
+def execute_full_nl_indexation(include_train, include_val, include_test, include_name, include_item_description):
     logger.info("Starting nl indexation ...")
 
     word2i_name = 0
@@ -99,6 +99,12 @@ def execute_full_nl_indexation(include_train, include_val, include_name, include
 
         data = mdp.load_data(MercariConfig.VALIDATION_SET_PREP_FILE)
         val_data = {'data': data, 'file': MercariConfig.VALIDATION_SET_PREP_FILE}
+
+    if include_test:
+        logger.info("Loading prepared test data ...")
+
+        data = mdp.load_data(MercariConfig.TEST_SET_PREP_FILE, test=True)
+        test_data = {'data': data, 'file': MercariConfig.TEST_SET_PREP_FILE}
 
     if include_name:
         logger.info("Loading word2index for name ...")
@@ -120,7 +126,7 @@ def execute_full_nl_indexation(include_train, include_val, include_name, include
     
     nlp = w2i.load_spacy_model(model_nm='en_core_web_md', include_ner=True)
 
-    for data in [train_data, val_data]:
+    for data in [train_data, val_data, test_data]:
         if data != 0:
             for word2i in [word2i_name, word2i_item_desc]:
                 if word2i != 0:
@@ -144,6 +150,7 @@ def main():
     b_id = False
     b_train = False
     b_val = False
+    b_test = False
     
     for arg in sys.argv[1:]:
         if arg == 'name':
@@ -154,14 +161,19 @@ def main():
             b_train = True
         elif arg == 'validation':
             b_val = True
+        elif arg == 'test':
+            b_test = True
     
     if (not b_nm and not b_id):
         b_nm = True
+        b_id = True
 
-    if (not b_train and not b_val):
+    if (not b_train and not b_val and not b_test):
         b_train = True
+        b_val = True
+        b_test = True
         
-    execute_full_nl_indexation(include_train=b_train, include_val=b_val, 
+    execute_full_nl_indexation(include_train=b_train, include_val=b_val, include_test=b_test,
                                include_name=b_nm, include_item_description=b_id)
 
     
