@@ -49,9 +49,9 @@ logger = logging.getLogger('MerL.data_preparation')
 
 
 class MercariConfig:
-    PROJECT_ROOT_DIR = '.'
-    INPUT_DIR = os.path.join(PROJECT_ROOT_DIR, ".")
-    OUTPUT_DIR = os.path.join(PROJECT_ROOT_DIR, ".")
+    PROJECT_ROOT_DIR = '~'
+    INPUT_DIR = os.path.join(PROJECT_ROOT_DIR, "data")
+    OUTPUT_DIR = os.path.join(PROJECT_ROOT_DIR, "data")
     TRAINING_SET_FILE = "train.tsv"
     TRAINING_SET_PREP_FILE = "mercari_train_prep.csv"
     VALIDATION_SET_PREP_FILE = "mercari_val_prep.csv"
@@ -92,8 +92,8 @@ class MercariConfig:
     MAX_WORDS_IN_ITEM_DESC = 500
     MAX_WORDS_IN_NAME = 25
     
-    TRAIN_SIZE = 0.16
-    VAL_SIZE = 0.04
+    TRAIN_SIZE = 0.2
+    VAL_SIZE = 0.02
 
 
 def load_data(file_name, sep):
@@ -391,7 +391,7 @@ def walk_tokens_4_word2i(item_id, doc, pos_i, words, start, end):
     return pos_i
 
 
-def walk_items_4_word2i(items, nlp, max_words=None):
+def walk_items_4_word2i(items, nlp, max_words):
     words = []
     progress = 0
     set_len = len(items)
@@ -439,18 +439,20 @@ def walk_items_4_word2i(items, nlp, max_words=None):
 
         max_words_len = pos_i if max_words_len < pos_i else max_words_len
 
+        words.extend(
+            [[item_id, pos_i, MercariConfig.PAD , MercariConfig.NON_ENTITY_TYPE] for pos_i in range(pos_i, max_words + 1)])        
 
         progress += 1
         
     return words, max_words_len
 
 
-def build_word2i_4_items(items, nlp):
-    words, max_words_len = walk_items_4_word2i(items=items, nlp=nlp)
+def build_word2i_4_items(items, nlp, max_words):
+    words, max_words_len = walk_items_4_word2i(items=items, nlp=nlp, max_words=max_words)
 
     word2i = build_word2i_from_sequence_list(words=words)
 
-    return word2i, max_words_len
+    return word2i, words, max_words_len
 
 
 def build_word2i_from_sequence_list(words):
@@ -511,21 +513,32 @@ def save_word2i(word2i, file_name):
 
 def execute_full_word2i(name, item_description, train_data, nlp):
     columns = []
-    word2i_4_name = None
-    word2i_4_id = None
+    word2i_name = None
+    word2i_id = None
+    words_raw_name = None
+    words_raw_id = None
+    context = ""
     
     if name:
-        columns.append('name')
+        columns.append(['name', MercariConfig.MAX_WORDS_IN_NAME])
+        context = 'name'
     if item_description:
-        columns.append('item_description')
-
-    logger.info("Creating word2index for %s ...", columns)
+        if name:
+            context += ' and '
+            
+        columns.append(['item_description', MercariConfig.MAX_WORDS_IN_ITEM_DESC])
+        context += 'item_description'
+        
+    logger.info("Creating word2index for %s ...", context)
     then = time()
 
-    for column_nm in columns:
+    for column in columns:
+        column_nm = column[0]
+        max_words = column[1]
+                            
         logger.info("Creating word2index for %s ...", column_nm)
 
-        word2i, max_words = build_word2i_4_items(train_data[column_nm], nlp)
+        word2i, words_raw, max_words = build_word2i_4_items(items=train_data[column_nm], nlp=nlp, max_words=max_words)
 
         logger.info("Creating word2index for %s done.", column_nm)
 
@@ -533,10 +546,12 @@ def execute_full_word2i(name, item_description, train_data, nlp):
 
         if column_nm == 'item_description':
             word2i_file_nm = MercariConfig.WORD_2_INDEX_4_ITEM_DESC_FILE
-            word2i_4_id = word2i
+            word2i_id = word2i
+            words_raw_id = words_raw
         elif column_nm == 'name':
             word2i_file_nm = MercariConfig.WORD_2_INDEX_4_NAME_FILE
-            word2i_4_name = word2i
+            word2i_name = word2i
+            words_raw_name = words_raw
 
         save_word2i(word2i=word2i, file_name=word2i_file_nm)
 
@@ -544,15 +559,18 @@ def execute_full_word2i(name, item_description, train_data, nlp):
 
     logger.info("Creating word2index for %s done in %.3f seconds.", columns, time() - then)     
 
-    return word2i_4_name, word2i_4_id
+    return word2i_name, word2i_id, words_raw_name, words_raw_id
 
 
-def build_index_sequence(word2i, words):
+def build_index_sequence(word2i, words, max_words):
     words_raw = pd.DataFrame(words)
 
     words_raw.columns = ['item_id', 'pos', 'word', 'entity_type']
 
     words_raw.drop(columns=['entity_type'], inplace=True)
+    
+    if max_words is not None:
+        words_raw = words_raw[words_raw.pos <= max_words]
 
     words_raw.set_index(['item_id', 'pos'], inplace=True)
     
@@ -574,11 +592,11 @@ def load_index_sequence(file_name, max_len):
 
     index_sequence_data = pd.read_csv(
         filepath_or_buffer=os.path.join(MercariConfig.INPUT_DIR, file_name),
-        header=0, index_col=['train_id', 'pos'])
-
-    logger.info("Loading index_sequence_data from %s done.", file_name)
+        header=0, index_col=['item_id', 'pos'])
 
     index_sequence_data.sort_index(inplace=True)
+
+    logger.info("Loading index_sequence_data from %s done.", file_name)
 
     return index_sequence_data
 
@@ -587,8 +605,24 @@ def save_index_sequence_data(index_sequence_data, file_name):
     index_sequence_data.to_csv(path_or_buf=os.path.join(MercariConfig.OUTPUT_DIR, file_name))   
 
 
+def load_item_desc_sequence(file_name):
+    seq = load_index_sequence(file_name, MercariConfig.MAX_WORDS_IN_ITEM_DESC).as_matrix()
+
+    seq = np.reshape(a=seq, newshape=(-1, MercariConfig.MAX_WORDS_IN_ITEM_DESC + 1))
+    
+    return seq
+
+
+def load_name_sequence(file_name):
+    seq = load_index_sequence(file_name, MercariConfig.MAX_WORDS_IN_NAME).as_matrix()
+
+    seq = np.reshape(a=seq, newshape=(-1, MercariConfig.MAX_WORDS_IN_NAME + 1))
+    
+    return seq
+
+                                
 def execute_full_nl_indexation(train_data, val_data, test_data, name, item_desc, 
-                               nlp, word2i_name, word2i_id):
+                               nlp, word2i_name, word2i_id, words_raw_name, words_raw_id):
 
     logger.info("Starting indexation ...")
 
@@ -601,17 +635,23 @@ def execute_full_nl_indexation(train_data, val_data, test_data, name, item_desc,
     if train_data is not None:
         train_prop = {'data': train_data,
                       'name_file': MercariConfig.TRAINING_NAME_INDEX_FILE,
-                      'id_file': MercariConfig.TRAINING_ITEM_DESC_INDEX_FILE}
+                      'id_file': MercariConfig.TRAINING_ITEM_DESC_INDEX_FILE,
+                      'words_raw_name': words_raw_name,
+                      'words_raw_id': words_raw_id}
 
     if val_data is not None:
         val_prop = {'data': val_data,
                     'name_file': MercariConfig.VALIDATION_NAME_INDEX_FILE,
-                    'id_file': MercariConfig.VALIDATION_ITEM_DESC_INDEX_FILE}
+                    'id_file': MercariConfig.VALIDATION_ITEM_DESC_INDEX_FILE,
+                    'words_raw_name': None,
+                    'words_raw_id': None}
 
     if test_data is not None:
         test_prop = {'data': test_data,
                      'name_file': MercariConfig.TEST_NAME_INDEX_FILE,
-                     'id_file': MercariConfig.TEST_ITEM_DESC_INDEX_FILE}
+                     'id_file': MercariConfig.TEST_ITEM_DESC_INDEX_FILE,
+                     'words_raw_name': None,
+                     'words_raw_id': None}
 
     if name:
         logger.info("Picking up word2index for name ...")
@@ -627,7 +667,7 @@ def execute_full_nl_indexation(train_data, val_data, test_data, name, item_desc,
     if item_desc:
         logger.info("Picking up word2index for item_description ...")
 
-        word2i_id = load_word2i(file_name=MercariConfig.WORD_2_INDEX_4_ITEM_DESC_FILE, word2index=word2i_id,
+        word2i_id = load_word2i(file_name=MercariConfig.WORD_2_INDEX_4_ITEM_DESC_FILE, word2i=word2i_id,
                                 max_words_from_index=MercariConfig.MAX_WORDS_FROM_INDEX_4_ITEM_DESC)
 
         logger.info("Picking up word2index for item_description done.")
@@ -641,8 +681,10 @@ def execute_full_nl_indexation(train_data, val_data, test_data, name, item_desc,
                 if word2i_prop is not None:
                     if word2i_prop == name_prop:
                         file_name = data_prop['name_file']
+                        words = data_prop['words_raw_name']
                     else:    
                         file_name = data_prop['id_file']
+                        words = data_prop['words_raw_id']
                         
                     data = data_prop['data']
                     col_name = word2i_prop['col_name']
@@ -651,13 +693,18 @@ def execute_full_nl_indexation(train_data, val_data, test_data, name, item_desc,
 
                     logger.info("Indexation for file %s ...", file_name)
                     
-                    words, _ = walk_items_4_word2i(items=data[col_name], nlp=nlp, max_words=max_words)
+                    if words is None:
+                        words, _ = walk_items_4_word2i(items=data[col_name], nlp=nlp, max_words=max_words)
 
+                    index_sequence_data = build_index_sequence(word2i=word2i, words=words, max_words=max_words)
+                    
                     logger.info("Indexation for file %s done.", file_name)
-                    
-                    index_sequence_data = build_index_sequence(word2i=word2i, words=words)
-                    
+
+                    logger.info("Saving inndexation file %s ...", file_name)
+
                     save_index_sequence_data(index_sequence_data=index_sequence_data, file_name=file_name)
+
+                    logger.info("Saving inndexation file %s done.", file_name)
 
     logger.info("Done with indexation.")   
     
@@ -681,6 +728,8 @@ def main():
     
     word2i_name = None
     word2i_id = None
+    words_raw_name = None
+    words_raw_id = None
     
     for arg in sys.argv[1:]:
         if arg == 'initialization':
@@ -760,11 +809,17 @@ def main():
             category=category, 
             brand=brand)
 
+    if initialization or categorization:
+        save_all_prepared_data(
+            train_data=train_data if training else None, 
+            val_data=val_data if validation else None, 
+            test_data=test_data if test else None)
+
     if word2i or indexation:
         nlp = load_language_model(model_nm='en', include_ner=True)
     
     if word2i:
-        word2i_name, word2i_id = execute_full_word2i(
+        word2i_name, word2i_id, words_raw_name, words_raw_id = execute_full_word2i(
             name, item_desc, train_data, nlp)
     
     if indexation:
@@ -773,24 +828,11 @@ def main():
             val_data=val_data if validation else None, 
             test_data=test_data if test else None, 
             name=name, item_desc=item_desc,
-            nlp=nlp, word2i_name=word2i_name, word2i_id=word2i_id)
-
-    save_all_prepared_data(
-        train_data=train_data if training else None, 
-        val_data=val_data if validation else None, 
-        test_data=test_data if test else None)
-
-
+            nlp=nlp, word2i_name=word2i_name, word2i_id=word2i_id,
+            words_raw_name=words_raw_name if training else None,
+            words_raw_id=words_raw_id if training else None)
     
+
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
 
