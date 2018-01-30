@@ -7,11 +7,22 @@ from time import time
 from datetime import datetime
 
 import pandas as pd
+
 import numpy as np
+
 from sklearn.model_selection import StratifiedShuffleSplit
 
 import spacy
 from spacy.symbols import ORTH
+
+import keras
+import keras.models as km
+import keras.layers as kl
+import keras.constraints as kc
+from keras import losses
+from keras.models import load_model
+from keras.preprocessing import sequence
+from keras import backend as K
 
 
 DEFAULT_LOGGING = {
@@ -50,10 +61,10 @@ logger = logging.getLogger('MerL.data_preparation')
 
 
 class MercariConfig:
-    PROJECT_ROOT_DIR = '~'
+    PROJECT_ROOT_DIR = '/home/ubuntu'
     INPUT_DIR = os.path.join(PROJECT_ROOT_DIR, "data")
     OUTPUT_DIR = os.path.join(PROJECT_ROOT_DIR, "data")
-    TF_LOG_DIR = os.path.join(PROJECT_ROOT_DIR, "tf_logs")
+    TF_LOG_DIR = os.path.join(OUTPUT_DIR, "tf_logs")
     TRAINING_SET_FILE = "train.tsv"
     TRAINING_SET_PREP_FILE = "mercari_train_prep.csv"
     VALIDATION_SET_PREP_FILE = "mercari_val_prep.csv"
@@ -89,13 +100,21 @@ class MercariConfig:
 
     NON_ENTITY_TYPE = '___NONE_ENTITY___'
     
-    MAX_WORDS_FROM_INDEX_4_ITEM_DESC = 50000
-    MAX_WORDS_FROM_INDEX_4_NAME = 40000
-    MAX_WORDS_IN_ITEM_DESC = 500
+    SPACY_MODEL ='en_core_web_md'
+    INCLUDE_NER = True
+
+    MAX_WORDS_FROM_INDEX_4_ITEM_DESC = 40000
+    MAX_WORDS_FROM_INDEX_4_NAME = 31000
+    MAX_WORDS_IN_ITEM_DESC = 300
     MAX_WORDS_IN_NAME = 20
     
-    TRAIN_SIZE = 0.2
+    TRAIN_SIZE = 0.16
     VAL_SIZE = 0.02
+    
+    DP = 'DP01R00'
+    WP = 'WP01R00'
+    MV = 'MV01R00'
+    OV = 'OV01R00'
 
     @staticmethod
     def get_new_tf_log_dir():
@@ -157,14 +176,14 @@ def split_data(X, y, train_size, val_size):
     return X_t, y_t, X_v, y_v
 
 
-def load_all_data(training, validation, test, initialization):
+def load_all_data(train_set, val_set, test_set, initialization):
     train_data = None
     val_data = None
     test_data = None
     
     sep = '\t' if initialization else ','
     
-    if training:
+    if train_set:
         if initialization:
             logger.info("Loading initial training data ...")
         
@@ -178,14 +197,14 @@ def load_all_data(training, validation, test, initialization):
         
             logger.info("Loading prepared training data done.")
 
-    if validation:
+    if val_set:
         logger.info("Loading prepared validation data ...")
 
         val_data = load_data(file_name=MercariConfig.VALIDATION_SET_PREP_FILE, sep=sep)
 
         logger.info("Loading prepared validation data done.")
 
-    if test:
+    if test_set:
         if initialization:
             logger.info("Loading initial test data ...")
             
@@ -728,20 +747,224 @@ def execute_full_nl_indexation(train_data, val_data, test_data, name, item_desc,
     
     return train_data, val_data, test_data
 
+
+def get_data_for_training(data_file, name_index_file, item_desc_file, max_words_in_name, max_words_in_item_desc):
+    data = load_data(data_file, sep=',')
+    name_seq = load_index_sequence(name_index_file, max_words_in_name)
+    item_desc_seq = load_index_sequence(item_desc_file, max_words_in_item_desc)
+
+    X_name_seq = name_seq.as_matrix()
+    X_item_desc_seq = item_desc_seq.as_matrix()
+    x_cat = data['category_id'].as_matrix()
+    x_brand = data['brand_id'].as_matrix()
+    x_f = data[['item_condition_id', 'shipping']].as_matrix()
+    y = data['price'].as_matrix()
+    
+    return X_name_seq, X_item_desc_seq, x_cat, x_brand, x_f, y
+
+
+def pad_sequences(X_name_seq, X_item_desc_seq, max_seq_len_name, max_seq_len_item_desc):
+    X_name_seq = sequence.pad_sequences(
+        X_name_seq, maxlen=max_seq_len_name, padding='post', truncating='post')
+    X_item_desc_seq = sequence.pad_sequences(
+        X_item_desc_seq, maxlen=max_seq_len_item_desc, padding='post', truncating='post')
+
+    return X_name_seq, X_item_desc_seq
+
+
+def root_mean_squared_logarithmic_error(y_true, y_pred):
+    ret = losses.mean_squared_logarithmic_error(y_true, y_pred)
+    return K.sqrt(ret)
+
+
+def root_mean_squared_error(y_true, y_pred):
+    ret = losses.mean_squared_error(y_true, y_pred)
+    return K.sqrt(ret)
+
+
+def load_keras_model(model_file):
+    model = load_model(os.path.join(MercariConfig.INPUT_DIR, model_file), 
+                       custom_objects={'root_mean_squared_error': root_mean_squared_error,
+                                       'root_mean_squared_logarithmic_error': root_mean_squared_logarithmic_error})
+    
+    return model
+    
+
+def save_keras_model(model, model_file):
+    model.save(os.path.join(MercariConfig.OUTPUT_DIR, model_file))
+
+
+def build_keras_model(word_embedding_dims, 
+                      num_words_name, max_seq_len_name, 
+                      num_words_item_desc, max_seq_len_item_desc,
+                      cat_embedding_dims,
+                      num_categories, num_brands):
+    
+    feature_input = kl.Input(shape=(2,), name='feature_input')
+    category_input = kl.Input(shape=(1,), name='category_input')
+    brand_input = kl.Input(shape=(1,), name='brand_input')
+    item_desc_input = kl.Input(shape=(max_seq_len_item_desc,), name='item_desc_input')
+    name_input = kl.Input(shape=(max_seq_len_name,), name='name_input')
+
+    item_desc_embedding = kl.Embedding(num_words_item_desc, word_embedding_dims, name='item_desc_embedding')
+    item_desc_embedding_dropout = kl.SpatialDropout1D(0.5, name='item_desc_embedding_dropout')
+    item_desc_lstm_1 = kl.CuDNNLSTM(units=200, name='item_desc_lstm_1', return_sequences=True)
+    item_desc_lstm_2 = kl.CuDNNLSTM(units=200, name='item_desc_lstm_2')
+    item_desc_lstm_dropout = kl.Dropout(0.5, name='item_desc_lstm_dropout')
+
+    name_embedding = kl.Embedding(num_words_name, word_embedding_dims, name='name_embedding')
+    name_embedding_dropout = kl.SpatialDropout1D(0.5, name='name_embedding_dropout')
+    name_lstm_1 = kl.CuDNNLSTM(units=100, name='name_lstm_1', return_sequences=True)
+    name_lstm_2 = kl.CuDNNLSTM(units=100, name='name_lstm_2')
+    name_lstm_dropout = kl.Dropout(0.5, name='name_lstm_dropout')
+
+    category_embedding = kl.Embedding(num_categories, cat_embedding_dims, name='category_embedding')
+    category_reshape = kl.Reshape(target_shape=(cat_embedding_dims,), name='category_reshape')
+
+    brand_embedding = kl.Embedding(num_brands, cat_embedding_dims, name='brand_embedding')
+    brand_reshape = kl.Reshape(target_shape=(cat_embedding_dims,), name='brand_reshape')
+
+    input_fusion = kl.Concatenate(axis=1, name='input_fusion')
+    fusion_dense_1 = kl.Dense(400, activation='relu', name='fusion_dense_1')
+    fusion_dense_2 = kl.Dense(200, activation='relu', name='fusion_dense_2')
+    fusion_dense_3 = kl.Dense(1, activation='relu', name='fusion_dense_3')
+
+    item_desc_output = item_desc_embedding(item_desc_input)
+    item_desc_output = item_desc_embedding_dropout(item_desc_output)
+    item_desc_output = item_desc_lstm_1(item_desc_output)
+    item_desc_output = item_desc_lstm_2(item_desc_output)
+    item_desc_output = item_desc_lstm_dropout(item_desc_output)
+
+    name_output = name_embedding(name_input)
+    name_output = name_embedding_dropout(name_output)
+    name_output = name_lstm_1(name_output)
+    name_output = name_lstm_2(name_output)
+    name_output = name_lstm_dropout(name_output)
+
+    category_output = category_embedding(category_input)
+    category_output = category_reshape(category_output)
+
+    brand_output = brand_embedding(brand_input)
+    brand_output = brand_reshape(brand_output)
+
+    output = input_fusion([name_output, item_desc_output, category_output, brand_output, feature_input])
+    output = fusion_dense_1(output)
+    output = fusion_dense_2(output)
+    prediction = fusion_dense_3(output)
+
+    model = km.Model(inputs=[feature_input, category_input, brand_input, name_input, item_desc_input], outputs=prediction)
+
+    return model    
+
+
+def compile_keras_model(model):
+    adam = keras.optimizers.Adam(lr=0.001, beta_1=0.9, beta_2=0.999, decay=0.00, clipvalue=0.5) #epsilon=None (doesn't work)
+    
+    model.compile(optimizer=adam, loss=root_mean_squared_logarithmic_error, metrics=[root_mean_squared_error])
+
+    return model
+
+
+def run_training(start_epoch, end_epoch, load_model_as, save_model_as):
+    X_name_seq_train, X_item_desc_seq_train, x_cat_train, x_brand_train, x_f_train, y_train = get_data_for_training(
+        MercariConfig.TRAINING_SET_PREP_FILE, 
+        MercariConfig.TRAINING_NAME_INDEX_FILE,
+        MercariConfig.TRAINING_ITEM_DESC_INDEX_FILE,
+        MercariConfig.MAX_WORDS_IN_NAME,
+        MercariConfig.MAX_WORDS_IN_ITEM_DESC)
+    
+    X_name_seq_val, X_item_desc_seq_val, x_cat_val, x_brand_val, x_f_val, y_val = get_data_for_training(
+        MercariConfig.VALIDATION_SET_PREP_FILE, 
+        MercariConfig.VALIDATION_NAME_INDEX_FILE,
+        MercariConfig.VALIDATION_ITEM_DESC_INDEX_FILE,
+        MercariConfig.MAX_WORDS_IN_NAME,
+        MercariConfig.MAX_WORDS_IN_ITEM_DESC)
+
+    num_words_item_desc = MercariConfig.MAX_WORDS_FROM_INDEX_4_ITEM_DESC + MercariConfig.WORD_I
+    max_seq_len_item_desc = MercariConfig.MAX_WORDS_IN_ITEM_DESC + 1 # Remember: first word is always <START>
+
+    num_words_name = MercariConfig.MAX_WORDS_FROM_INDEX_4_NAME + MercariConfig.WORD_I
+    max_seq_len_name = MercariConfig.MAX_WORDS_IN_NAME + 1 # Remember: first word is always <START>
+
+    X_name_seq_train, X_item_desc_seq_train = pad_sequences(X_name_seq=X_name_seq_train, 
+                                                            X_item_desc_seq=X_item_desc_seq_train, 
+                                                            max_seq_len_name=max_seq_len_name,
+                                                            max_seq_len_item_desc=max_seq_len_item_desc)
+
+    X_name_seq_val, X_item_desc_seq_val = pad_sequences(X_name_seq=X_name_seq_val, 
+                                                            X_item_desc_seq=X_item_desc_seq_val, 
+                                                            max_seq_len_name=max_seq_len_name,
+                                                            max_seq_len_item_desc=max_seq_len_item_desc)    
+    if load_model_as is None:
+        word_embedding_dims = 32
+        cat_embedding_dims = 10
+
+        num_categories = 1098
+        num_brands = 2767
+
+        model = build_keras_model(word_embedding_dims=word_embedding_dims, 
+                              num_words_name=num_words_name, max_seq_len_name=max_seq_len_name, 
+                              num_words_item_desc=num_words_item_desc, max_seq_len_item_desc=max_seq_len_item_desc,
+                              cat_embedding_dims=cat_embedding_dims,
+                              num_categories=num_categories, num_brands=num_brands)
         
+        model = compile_keras_model(model)
+    else:
+        model = load_keras_model(model_file=load_model_as)
+    
+    tf_log_dir = MercariConfig.get_new_tf_log_dir()
+
+    batch_size = 200
+    
+    callbacks = []
+
+    tb_callback = keras.callbacks.TensorBoard(log_dir=tf_log_dir, histogram_freq=0, batch_size=batch_size, 
+                                write_graph=True, write_grads=False, write_images=False, 
+                                embeddings_freq=0, embeddings_layer_names=None, embeddings_metadata=None)
+    
+    nan_callback = keras.callbacks.TerminateOnNaN()
+    
+    callbacks.append(nan_callback)
+
+    #reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2,
+    #                              patience=3, min_lr=0.001)
+
+    if save_model_as is not None:
+        file = save_model_as + '_' + MercariConfig.MV + '_' + MercariConfig.OV + '_' + MercariConfig.WP + '_' + MercariConfig.DP
+        file += '_' + str(start_epoch) + '_' + str(end_epoch)
+        file += '_{epoch:02d}-{val_loss:.4f}'
+        file += '_' + datetime.utcnow().strftime("%Y%m%d-%H%M%S") + '.hdf5'
+
+        mc_callback = keras.callbacks.ModelCheckpoint(filepath=os.path.join(MercariConfig.OUTPUT_DIR, file),
+                                                      monitor='val_loss',verbose=0,save_best_only=False, 
+                                                      save_weights_only=False, mode='min', period=1)   
+        
+        callbacks.append(mc_callback)
+
+    history_simple = model.fit(
+        [x_f_train, x_cat_train, x_brand_train, X_name_seq_train, X_item_desc_seq_train], y_train,
+        batch_size=batch_size,
+        epochs=end_epoch,
+        verbose=1,
+        callbacks=[nan_callback, mc_callback],
+        shuffle=True,
+        initial_epoch=start_epoch,
+        steps_per_epoch=None,
+        validation_data=[[x_f_val, x_cat_val, x_brand_val, X_name_seq_val, X_item_desc_seq_val], y_val])
+    
+
 def main():
     then = time()
     
-    logger.info("Data preparation started ...")     
-
     initialization = False
     categorization = False
     word2i = False
     indexation = False
-    
     training = False
-    validation = False
-    test = False
+    
+    train_set = False
+    val_set = False
+    test_set = False
     
     category = False
     brand = False
@@ -764,10 +987,12 @@ def main():
             indexation = True
         elif arg == 'training':
             training = True
-        elif arg == 'validation':
-            validation = True
-        elif arg == 'test':
-            test = True
+        elif arg == 'train_set':
+            train_set = True
+        elif arg == 'val_set':
+            val_set = True
+        elif arg == 'test_set':
+            test_set = True
         if arg == 'category':
             category = True
         elif arg == 'brand':
@@ -781,10 +1006,11 @@ def main():
     #categorization = True
     #word2i = True
     #indexation = True
-
     #training = True
-    #validation = True
-    #test = True
+
+    #train_set = True
+    #val_set = True
+    #test_set = True
 
     #category = True
     #brand = True
@@ -797,10 +1023,10 @@ def main():
         word2i = True
         indexation = True
     
-    if (not training and not test and not validation):
-        training = True
-        validation = True
-        test = True
+    if (not train_set and not test_set and not val_set):
+        train_set = True
+        val_set = True
+        test_set = True
         
     if (not brand and not category):
         category = True
@@ -812,51 +1038,62 @@ def main():
 
     word2i_only = word2i and not initialization and not categorization and not indexation
     
-    train_data, val_data, test_data = load_all_data(
-        training=training or categorization or word2i,
-        validation=validation and not initialization and not word2i_only,
-        test=test and not word2i_only,
-        initialization=initialization)
-        
-    if initialization:
-        train_data, val_data, test_data = execute_full_data_initialization(
-            train_data=train_data if training else None, 
-            test_data=test_data if test else None)
-        
-    if categorization:
-        train_data, val_data, test_data = execute_full_categorization(
-            train_data=train_data if training else None, 
-            val_data=val_data if validation else None,
-            test_data=test_data if test else None,
-            category=category, 
-            brand=brand)
+    if not training:
+        logger.info("Data preparation started ...")     
 
-    if initialization or categorization:
-        save_all_prepared_data(
-            train_data=train_data if training else None, 
-            val_data=val_data if validation else None, 
-            test_data=test_data if test else None)
+        train_data, val_data, test_data = load_all_data(
+            train_set=train_set or categorization or word2i,
+            val_set=val_set and not initialization and not word2i_only,
+            test_set=test_set and not word2i_only,
+            initialization=initialization)
 
-    if word2i or indexation:
-        nlp = load_language_model(model_nm='en', include_ner=True)
-    
-    if word2i:
-        word2i_name, word2i_id, words_raw_name, words_raw_id = execute_full_word2i(
-            name, item_desc, train_data, nlp)
-    
-    if indexation:
-        execute_full_nl_indexation(
-            train_data=train_data if training else None, 
-            val_data=val_data if validation else None, 
-            test_data=test_data if test else None, 
-            name=name, item_desc=item_desc,
-            nlp=nlp, word2i_name=word2i_name, word2i_id=word2i_id,
-            words_raw_name=words_raw_name if training else None,
-            words_raw_id=words_raw_id if training else None)
-    
-    logger.info("Data preparation done in %s.", time_it(then, time()))     
+        if initialization:
+            train_data, val_data, test_data = execute_full_data_initialization(
+                train_data=train_data if train_set else None, 
+                test_data=test_data if test_set else None)
+
+        if categorization:
+            train_data, val_data, test_data = execute_full_categorization(
+                train_data=train_data if train_set else None, 
+                val_data=val_data if val_set else None,
+                test_data=test_data if test_set else None,
+                category=category, 
+                brand=brand)
+
+        if initialization or categorization:
+            save_all_prepared_data(
+                train_data=train_data if train_set else None, 
+                val_data=val_data if val_set else None, 
+                test_data=test_data if test_set else None)
+
+        if word2i or indexation:
+            nlp = load_language_model(model_nm=MercariConfig.SPACY_MODEL, include_ner=MercariConfig.INCLUDE_NER)
+
+        if word2i:
+            word2i_name, word2i_id, words_raw_name, words_raw_id = execute_full_word2i(
+                name, item_desc, train_data, nlp)
+
+        if indexation:
+            execute_full_nl_indexation(
+                train_data=train_data if train_set else None, 
+                val_data=val_data if val_set else None, 
+                test_data=test_data if test_set else None, 
+                name=name, item_desc=item_desc,
+                nlp=nlp, word2i_name=word2i_name, word2i_id=word2i_id,
+                words_raw_name=words_raw_name if train_set else None,
+                words_raw_id=words_raw_id if train_set else None)
+
+        logger.info("Data preparation done in %s.", time_it(then, time()))  
+    elif training:
+        start_epoch = 0
+        end_epoch = 10
+        load_model_as = None
+        save_model_as = 'merl_model'
+        
+        run_training(start_epoch=start_epoch, end_epoch=end_epoch,
+                    load_model_as=load_model_as, save_model_as=save_model_as)
 
 
 if __name__ == "__main__":
     main()
-
+    
