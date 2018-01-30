@@ -114,7 +114,7 @@ class MercariConfig:
     DP = 'DP01R00'
     WP = 'WP01R00'
     MV = 'MV01R00'
-    OV = 'OV01R00'
+    OV = 'OV01R01'
 
     @staticmethod
     def get_new_tf_log_dir():
@@ -858,7 +858,7 @@ def build_keras_model(word_embedding_dims,
 
 
 def compile_keras_model(model):
-    adam = keras.optimizers.Adam(lr=0.001, beta_1=0.9, beta_2=0.999, decay=0.00, clipvalue=0.5) #epsilon=None (doesn't work)
+    adam = keras.optimizers.Adam(lr=0.0001, beta_1=0.9, beta_2=0.999, decay=0.00, clipvalue=0.5) #epsilon=None (doesn't work)
     
     model.compile(optimizer=adam, loss=root_mean_squared_logarithmic_error, metrics=[root_mean_squared_error])
 
@@ -908,10 +908,12 @@ def run_training(start_epoch, end_epoch, load_model_as, save_model_as):
                               cat_embedding_dims=cat_embedding_dims,
                               num_categories=num_categories, num_brands=num_brands)
         
-        model = compile_keras_model(model)
+#        model = compile_keras_model(model)
     else:
         model = load_keras_model(model_file=load_model_as)
-    
+
+    model = compile_keras_model(model)
+
     tf_log_dir = MercariConfig.get_new_tf_log_dir()
 
     batch_size = 200
@@ -926,14 +928,15 @@ def run_training(start_epoch, end_epoch, load_model_as, save_model_as):
     
     callbacks.append(nan_callback)
 
-    #reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2,
-    #                              patience=3, min_lr=0.001)
+#    lr_callback = keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=2, mode='min', min_lr=0)
+    
+#    callbacks.append(lr_callback)
 
     if save_model_as is not None:
         file = save_model_as + '_' + MercariConfig.MV + '_' + MercariConfig.OV + '_' + MercariConfig.WP + '_' + MercariConfig.DP
-        file += '_' + str(start_epoch) + '_' + str(end_epoch)
-        file += '_{epoch:02d}-{val_loss:.4f}'
-        file += '_' + datetime.utcnow().strftime("%Y%m%d-%H%M%S") + '.hdf5'
+        file += '_SE{0:02d}_EE{0:02d}'.format(start_epoch, end_epoch)
+        file += '_EP{epoch:02d}-{val_loss:.4f}_'
+        file += datetime.utcnow().strftime("%Y%m%d-%H%M%S") + '.hdf5'
 
         mc_callback = keras.callbacks.ModelCheckpoint(filepath=os.path.join(MercariConfig.OUTPUT_DIR, file),
                                                       monitor='val_loss',verbose=0,save_best_only=False, 
@@ -1087,8 +1090,8 @@ def main():
     elif training:
         start_epoch = 0
         end_epoch = 10
-        load_model_as = None
-        save_model_as = 'merl_model'
+        load_model_as = 'merl_model_MV01R00_OV01R00_WP01R00_DP01R00_0_10_10-0.4120_20180130-132801.hdf5'
+        save_model_as = 'TR002'
         
         run_training(start_epoch=start_epoch, end_epoch=end_epoch,
                     load_model_as=load_model_as, save_model_as=save_model_as)
