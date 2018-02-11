@@ -59,10 +59,9 @@ logger = logging.getLogger('MerL.data_preparation')
 
 
 class MerLConfig:
-    INPUT_DIR = '/home/ubuntu/data/MerL/input'
-    #INPUT_DIR = '../input'
-    OUTPUT_DIR = '/home/ubuntu/data/MerL'
-    #OUTPUT_DIR = '.'
+    KAGGLE_MODE = False
+    INPUT_DIR = '../input' if KAGGLE_MODE else '/home/ubuntu/data/MerL/input'
+    OUTPUT_DIR = '.' if KAGGLE_MODE else '/home/ubuntu/data/MerL'
     TRAIN_FILE = "mercari-price-suggestion-challenge/train.tsv"
     TRAIN_PREP_FILE = "mercari_train_prep"
     TRAIN_NAME_INDEX_FILE = "mercari_train_name_index"
@@ -80,59 +79,45 @@ class MerLConfig:
 
     EMB_ITEM_DESC_FILE = "mercari_emb_item_desc"
     EMB_NAME_FILE = "mercari_emb_name"
+    
+    CAT_CAT2I_FILE = 'mercari_cat_cat2i'
+    BRAND_CAT2I_FILE = 'mercari_brand_cat2i'
 
-    PAD = '___PAD___'
-    START = '___START___'
-    OOV = '___OOV___'
-    REMOVED_PRICE = '[rm]'
     EMPTY = '___VERY_EMPTY___'
-
-    PAD_I = 0
-    START_I = 1
-    OOV_I = 2
-    REMOVED_PRICE_I = 3
-    EMPTY_I = 4
-    WORD_I = 5
 
     TRAIN_SIZE = 0.18
     VAL_SIZE = 0.02
-    TEST_SIZE = 0.2
-    NUM_CATEGORIES = 1114
-    NUM_BRANDS = 2872
+    TEST_SIZE = 0.8
     DP = 'DP05R00'
     
     EMBED_FILE ='glove-global-vectors-for-word-representation/glove.6B.50d.txt'
 
     MAX_WORDS_FROM_INDEX_ITEM_DESC = 20000
     MAX_WORDS_FROM_INDEX_NAME = 20000
-    MAX_WORDS_IN_ITEM_DESC = 200
+    MAX_WORDS_IN_ITEM_DESC = 50
     MAX_WORDS_IN_NAME = 20
     WP = 'WP08R00'
 
     WORD_EMBED_DIMS = 50
     CAT_EMBED_DIMS = 10
-    MV = 'MV07R00'
+    MV = 'MV08R00'
     
     LEARNING_RATE = 0.001
     OV = 'OV01R00'
 
     START_EP = 0
     END_EP = 3
-    BATCH_SIZE = 196
-    LOAD_MODEL = 'TR050_MV07R00_OV01R00_WP08R00_DP05R00_SE00_EE03_EP03-0.3978_20180210-161549.hdf5'
-    SAVE_MODEL = 'TR051'
+    BATCH_SIZE = 192
+    LOAD_MODEL = None
+    SAVE_MODEL = 'TR060'
     
-    SUBMISSION_MODE = True
+    SUBMISSION_MODE = False
     GPU = False
-
-
-    @staticmethod
-    def get_new_tf_log_dir():
-        now = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-        log_dir = "{}/run-{}/".format(MerLConfig.TF_LOG_DIR, now)
-
-        return log_dir
     
+    if KAGGLE_MODE:
+        SUBMISSION_MODE = True
+        GPU = False
+
 
 def time_it(start, end):
     h, r = divmod(end - start, 3600)
@@ -163,7 +148,9 @@ def load_data(file_name, sep):
     if id_column is not None:
         data['item_id'] = data[id_column]
     
-        data.drop(columns=[id_column], inplace=True)
+        #data.drop(columns=[id_column], inplace=True)
+        data.drop(id_column, axis=1, inplace=True)
+        
                   
     data.set_index(['item_id'], inplace=True)
     
@@ -336,49 +323,56 @@ def execute_data_initialization(train_data, sub_data):
 
     logger.info("Splitting prepared training data done.")
 
-    logger.info("Preparing submission data ...")
+    if sub_data is not None:
+        logger.info("Preparing submission data ...")
 
-    prepare_data(sub_data)
+        prepare_data(sub_data)
 
-    logger.info("Preparing submission data done.")
+        logger.info("Preparing submission data done.")
 
     return train_data, val_data, test_data, sub_data
     
 
-def build_category2index(data, category, max_cats):
+def save_cat2i(cat2i, file_name):
+    file_name += '_' + MerLConfig.DP + '.csv'
+    cat2i.to_csv(path_or_buf=os.path.join(MerLConfig.OUTPUT_DIR, file_name))
+
+
+def load_cat2i(file_name):
+    file_name += '_' + MerLConfig.DP + '.csv'
+    cat2i = pd.read_csv(filepath_or_buffer=os.path.join(MerLConfig.OUTPUT_DIR, file_name), header=0, index_col=None)
+
+    return cat2i
+
+
+def build_category2index(data, category):
     category2index = data[[category + '_name', 'name']]
 
     category2index.columns = [category, category + '_cnt']
 
     category2index = category2index.groupby(category).count()
 
-    category2index[category + '_id'] = [i for i in range(MerLConfig.WORD_I, len(category2index) + MerLConfig.WORD_I)]
+    category2index[category + '_id'] = [i for i in range(1, len(category2index) + 1)]
 
-    category2index = category2index.sort_values(by=category + '_cnt', ascending=False).head(max_cats)
-
-    category2index.at[MerLConfig.OOV, category + '_id'] = MerLConfig.OOV_I
-    category2index.at[MerLConfig.EMPTY, category + '_id'] = MerLConfig.EMPTY_I
-
-    category2index[category + '_cnt'].fillna(value=0, inplace=True)
     category2index.sort_values(by=category + '_id', inplace=True)
     category2index = category2index.astype('int32')
 
     return category2index
 
 
-def categorize_column(data, category, cat2i, max_cats):
-    cat2i = cat2i.sort_values(by=category + '_cnt', ascending=False).head(max_cats)
-    
+def categorize_column(data, category, cat2i):
     if (category + '_id') in data.columns:
-        data.drop(columns=category + '_id', inplace=True)
-        
+        #data.drop(columns=category + '_id', inplace=True)
+        data.drop(category + '_id', axis=1, inplace=True)
+
     data = pd.merge(data, cat2i, left_on=category + '_name', right_index=True, how='left')
 
-    data[category + '_id'].fillna(value=MerLConfig.OOV_I, inplace=True)
+    data[category + '_id'].fillna(value=0, inplace=True)
     
     data[category + '_id'] = data[category + '_id'].astype(dtype='int32')    
 
-    data.drop(columns=[category + '_cnt'], inplace=True)
+    #data.drop(columns=[category + '_cnt'], inplace=True)
+    data.drop(category + '_cnt', axis=1, inplace=True)
     
     return data
 
@@ -396,16 +390,23 @@ def execute_categorization(train_data, val_data, test_data, sub_data, category, 
 
     if category:
         logger.info("Building category2index for category ...")
-        cat2i = build_category2index(data=train_data, category='category', max_cats=MerLConfig.NUM_CATEGORIES)
-        cat_prop = {'cat2i': cat2i, 'category': 'category', 'max_cats': MerLConfig.NUM_CATEGORIES + 1}
+        
+        cat2i = build_category2index(data=train_data, category='category')
+        
+        save_cat2i(cat2i, MerLConfig.CAT_CAT2I_FILE)
+        
+        cat_prop = {'cat2i': cat2i, 'category': 'category'}
 
         logger.info("Building category2index for category done.")
 
     if brand:
         logger.info("Building category2index for brand ...")
         
-        cat2i = build_category2index(data=train_data, category='brand', max_cats = MerLConfig.NUM_BRANDS)
-        brand_prop = {'cat2i': cat2i, 'category': 'brand', 'max_cats': MerLConfig.NUM_BRANDS + 1}
+        cat2i = build_category2index(data=train_data, category='brand')
+        
+        save_cat2i(cat2i, MerLConfig.BRAND_CAT2I_FILE)
+        
+        brand_prop = {'cat2i': cat2i, 'category': 'brand'}
 
         logger.info("Building category2index for brand done.")
 
@@ -418,8 +419,7 @@ def execute_categorization(train_data, val_data, test_data, sub_data, category, 
                     
                     data_prop['data'] = categorize_column(data=data_prop['data'], 
                                                           category=cat2i_prop['category'],
-                                                          cat2i=cat2i_prop['cat2i'],
-                                                          max_cats=cat2i_prop['max_cats'])
+                                                          cat2i=cat2i_prop['cat2i'])
 
                     logger.info("Performing categorization for file %s and category %s done.", 
                                 data_prop['file'], cat2i_prop['category'])
@@ -712,6 +712,7 @@ def load_keras_model(model_file):
 def save_keras_model(model, model_file):
     model.save(os.path.join(MerLConfig.OUTPUT_DIR, model_file))
 
+
 def create_LSTM(units, name):
     if MerLConfig.GPU:
         return kl.CuDNNLSTM(units=units, 
@@ -730,17 +731,27 @@ def create_LSTM(units, name):
                            return_state=False, 
                            stateful=False,
                            name=name)
-    else:
-        return kl.LSTM(units=units, 
-                       activation='tanh', recurrent_activation='hard_sigmoid', use_bias=True, 
-                       kernel_initializer='glorot_uniform', recurrent_initializer='orthogonal', 
-                       bias_initializer='zeros', unit_forget_bias=True, 
-                       kernel_regularizer=None, recurrent_regularizer=None, 
-                       bias_regularizer=None, activity_regularizer=None, 
-                       kernel_constraint=None, recurrent_constraint=None, bias_constraint=None, 
-                       dropout=0.0, recurrent_dropout=0.0, implementation=1, 
-                       return_sequences=False, return_state=False, 
-                       go_backwards=False, stateful=False, unroll=False, name=name)
+    #else:
+     #   return kl.LSTM(units=units, 
+      #                 activation='tanh', recurrent_activation='hard_sigmoid', 
+       #                #activation='relu', recurrent_activation='hard_sigmoid', 
+        #               use_bias=True, 
+         #              kernel_initializer='glorot_uniform', recurrent_initializer='orthogonal', 
+          #             bias_initializer='zeros', unit_forget_bias=True, 
+           #            kernel_regularizer=None, recurrent_regularizer=None, 
+            #           bias_regularizer=None, activity_regularizer=None, 
+             #          kernel_constraint=None, recurrent_constraint=None, bias_constraint=None, 
+              #         dropout=0.0, recurrent_dropout=0.0, implementation=1, 
+               #        return_sequences=False, return_state=False, 
+                #       go_backwards=False, stateful=False, unroll=False, name=name)
+    
+    return kl.GRU(units=units, 
+                  activation='tanh', recurrent_activation='hard_sigmoid', 
+                  use_bias=True, kernel_initializer='glorot_uniform', recurrent_initializer='orthogonal',
+                  bias_initializer='zeros', kernel_regularizer=None, recurrent_regularizer=None, bias_regularizer=None,
+                  activity_regularizer=None, kernel_constraint=None, recurrent_constraint=None, bias_constraint=None,
+                  dropout=0.0, recurrent_dropout=0.0, implementation=1, return_sequences=False, return_state=False,
+                  go_backwards=False, stateful=False, unroll=False, name=name)
 
 
 def build_keras_model(word_embedding_dims, 
@@ -770,17 +781,18 @@ def build_keras_model(word_embedding_dims,
     name_lstm_2 = create_LSTM(units=100, name='name_lstm_2')
     name_lstm_dropout = kl.Dropout(0.5, name='name_lstm_dropout')
 
-    category_embedding = kl.Embedding(num_categories, cat_embedding_dims, name='category_embedding')
+    category_embedding = kl.Embedding(num_categories + 1, cat_embedding_dims, name='category_embedding')
     category_embedding_dropout = kl.Dropout(0.5, name='category_embedding_dropout')
     category_reshape = kl.Reshape(target_shape=(cat_embedding_dims,), name='category_reshape')
 
-    brand_embedding = kl.Embedding(num_brands, cat_embedding_dims, name='brand_embedding')
+    brand_embedding = kl.Embedding(num_brands + 1, cat_embedding_dims, name='brand_embedding')
     brand_embedding_dropout = kl.Dropout(0.5, name='brand_embedding_dropout')
     brand_reshape = kl.Reshape(target_shape=(cat_embedding_dims,), name='brand_reshape')
 
+    fusion_dim = max_seq_len_name + max_seq_len_item_desc + 2 * cat_embedding_dims + 2
+    
     input_fusion = kl.Concatenate(axis=1, name='input_fusion')
-    fusion_dense_1 = kl.Dense(322, activation='relu', name='fusion_dense_1')
-#    fusion_dropout_1 = kl.Dropout(0.1, name='fusion_dropout_1')
+    fusion_dense_1 = kl.Dense(fusion_dim, activation='relu', name='fusion_dense_1')
     fusion_dense_2 = kl.Dense(200, activation='relu', name='fusion_dense_2')
     fusion_dense_3 = kl.Dense(1, activation='relu', name='fusion_dense_3')
 
@@ -807,7 +819,6 @@ def build_keras_model(word_embedding_dims,
     output = input_fusion([cond_input, ship_input, name_output, item_desc_output, 
                            category_output, brand_output])
     output = fusion_dense_1(output)
-#    output = fusion_dropout_1(output)
     output = fusion_dense_2(output)
     prediction = fusion_dense_3(output)
 
@@ -821,9 +832,17 @@ def compile_keras_model(model):
     adam = keras.optimizers.Adam(lr=MerLConfig.LEARNING_RATE, beta_1=0.9, beta_2=0.999, 
                                  decay=0.00, clipvalue=0.5) #epsilon=None (doesn't work)
     
-    model.compile(optimizer=adam, loss=root_mean_squared_logarithmic_error, metrics=[root_mean_squared_error])
+    model.compile(optimizer=adam, loss=root_mean_squared_logarithmic_error, metrics=None) #[root_mean_squared_error])
 
     return model
+
+
+def lr_schedule(ep):
+    lr = MerLConfig.LEARNING_RATE * (1 - ep/10)
+    
+    logger.info('New learning rate: %01.10f', lr)
+    
+    return lr
 
 
 def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, submission):
@@ -833,16 +852,13 @@ def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, subm
         MerLConfig.TRAIN_ITEM_DESC_INDEX_FILE, 
         submission=False)
     
-    if not submission:
-        x_name_seq_v, x_item_desc_seq_v, x_cat_v, x_brand_v, x_cond_v, x_ship_v, y_v, _ = get_data_packages(
-            MerLConfig.VAL_PREP_FILE, 
-            MerLConfig.VAL_NAME_INDEX_FILE,
-            MerLConfig.VAL_ITEM_DESC_INDEX_FILE, 
-            submission=False)
+    x_name_seq_v, x_item_desc_seq_v, x_cat_v, x_brand_v, x_cond_v, x_ship_v, y_v, _ = get_data_packages(
+        MerLConfig.VAL_PREP_FILE, 
+        MerLConfig.VAL_NAME_INDEX_FILE,
+        MerLConfig.VAL_ITEM_DESC_INDEX_FILE, 
+        submission=False)
         
-        val_data = [[x_cond_v, x_ship_v, x_cat_v, x_brand_v, x_name_seq_v, x_item_desc_seq_v], y_v]
-    else:
-        val_data = None
+    val_data = [[x_cond_v, x_ship_v, x_cat_v, x_brand_v, x_name_seq_v, x_item_desc_seq_v], y_v]
 
     if build_on_model is None:
         emb_matrix_item_desc = load_emb_matrix(MerLConfig.EMB_ITEM_DESC_FILE)
@@ -852,6 +868,11 @@ def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, subm
         emb_matrix_name = load_emb_matrix(MerLConfig.EMB_NAME_FILE)
         max_words_name = MerLConfig.MAX_WORDS_FROM_INDEX_NAME
         max_seq_len_name = MerLConfig.MAX_WORDS_IN_NAME
+        
+        num_categories = len(load_cat2i(MerLConfig.CAT_CAT2I_FILE))
+        num_brands = len(load_cat2i(MerLConfig.BRAND_CAT2I_FILE))
+        
+        logger.info('Categories: %s, Brands: %s', num_categories, num_brands)
 
         model = build_keras_model(word_embedding_dims=MerLConfig.WORD_EMBED_DIMS,
                                   num_words_name=max_words_name, 
@@ -861,8 +882,8 @@ def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, subm
                                   emb_matrix_item_desc=emb_matrix_item_desc, 
                                   max_seq_len_item_desc=max_seq_len_item_desc,
                                   cat_embedding_dims=MerLConfig.CAT_EMBED_DIMS,
-                                  num_categories=MerLConfig.NUM_CATEGORIES + 1, 
-                                  num_brands=MerLConfig.NUM_BRANDS + 1)
+                                  num_categories=num_categories, 
+                                  num_brands=num_brands)
     else:
         model = build_on_model
 
@@ -870,19 +891,7 @@ def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, subm
 
     callbacks = []
     
-    #tf_log_dir = MerLConfig.get_new_tf_log_dir()
-
-    #tb_callback = keras.callbacks.TensorBoard(log_dir=tf_log_dir, histogram_freq=0, batch_size=MerLConfig.BATCH_SIZE, 
-    #                            write_graph=True, write_grads=False, write_images=False, 
-    #                            embeddings_freq=0, embeddings_layer_names=None, embeddings_metadata=None)
-
-    #callbacks.append(tb_callback)
-
-    #nan_callback = keras.callbacks.TerminateOnNaN()
-
-    #callbacks.append(nan_callback)
-
-    lrs_callback = keras.callbacks.LearningRateScheduler(lambda ep: MerLConfig.LEARNING_RATE * (1 - ep/10))
+    lrs_callback = keras.callbacks.LearningRateScheduler(lr_schedule)
 
     callbacks.append(lrs_callback)
 
@@ -902,25 +911,33 @@ def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, subm
         x=[x_cond_t, x_ship_t, x_cat_t, x_brand_t, x_name_seq_t, x_item_desc_seq_t], y=y_t,
         batch_size=MerLConfig.BATCH_SIZE,
         epochs=end_epoch,
-        verbose=1,
+        verbose=1 if not submission else 2,
         callbacks=callbacks,
         shuffle=True,
         initial_epoch=start_epoch,
         steps_per_epoch=None,
-        validation_data=val_data)
+        validation_data=val_data if not submission else None)
+    
+    if submission:
+        then = time()
+        
+        logger.info("Validation ...")    
+
+        result = model.evaluate(x=[x_cond_v, x_ship_v, x_cat_v, x_brand_v, x_name_seq_v, x_item_desc_seq_v],
+                       y=y_v, batch_size=None, verbose=1, sample_weight=None, steps=None)
+
+        logger.info("Validation done in %s. Result: %01.4f", time_it(then, time()), result)    
     
     return model
 
 
-def execute_test(model, load_model_as):
+def execute_test(model):
     x_name_seq, x_item_desc_seq, x_cat, x_brand, x_cond, x_ship, y, _ = get_data_packages(
         MerLConfig.TEST_PREP_FILE, 
         MerLConfig.TEST_NAME_INDEX_FILE,
         MerLConfig.TEST_ITEM_DESC_INDEX_FILE, 
         submission=False)
     
-    model = load_keras_model(model_file=load_model_as)
-
     result = model.evaluate(x=[x_cond, x_ship, x_cat, x_brand, x_name_seq, x_item_desc_seq],
                    y=y, batch_size=None, verbose=1, sample_weight=None, steps=None)
     
@@ -999,7 +1016,7 @@ def main():
             test_set = True
         elif arg == 'sub_set':
             sub_set = True
-        if arg == 'category':
+        elif arg == 'category':
             category = True
         elif arg == 'brand':
             brand = True
@@ -1017,7 +1034,7 @@ def main():
         submission = True
 
         train_set = True
-        val_set = False
+        val_set = True
         test_set = False
         sub_set = True
 
@@ -1115,7 +1132,7 @@ def main():
 
         result = execute_test(model)
     
-        logger.info("Done executing test in %s. Result: %01.4f, %02.4f", time_it(then, time()), result[0], result[1])    
+        logger.info("Done executing test in %s. Result: %01.4f", time_it(then, time()), result)    
         
     if submission:
         logger.info("Executing submission ...")    
