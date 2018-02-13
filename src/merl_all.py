@@ -22,6 +22,8 @@ from keras.preprocessing import sequence
 from keras.preprocessing.text import Tokenizer
 from keras import backend as K
 
+import tensorflow as tf
+
 
 DEFAULT_LOGGING = {
     'version': 1,
@@ -85,34 +87,34 @@ class MerLConfig:
 
     EMPTY = '___VERY_EMPTY___'
 
-    TRAIN_SIZE = 0.18
+    TRAIN_SIZE = 0.4
     VAL_SIZE = 0.02
-    TEST_SIZE = 0.8
+    TEST_SIZE = 0.02
     DP = 'DP05R00'
     
-    EMBED_FILE ='glove-global-vectors-for-word-representation/glove.6B.50d.txt'
+    EMBED_FILE ='glove-global-vectors-for-word-representation/glove.6B.100d.txt'
 
-    MAX_WORDS_FROM_INDEX_ITEM_DESC = 20000
-    MAX_WORDS_FROM_INDEX_NAME = 20000
-    MAX_WORDS_IN_ITEM_DESC = 50
+    MAX_WORDS_FROM_INDEX_ITEM_DESC = 40000
+    MAX_WORDS_FROM_INDEX_NAME = 40000
+    MAX_WORDS_IN_ITEM_DESC = 100
     MAX_WORDS_IN_NAME = 20
-    WP = 'WP08R00'
+    WP = 'WP09R00'
 
-    WORD_EMBED_DIMS = 50
-    CAT_EMBED_DIMS = 10
-    MV = 'MV08R00'
+    WORD_EMBED_DIMS = 100
+    CAT_EMBED_DIMS = 20
+    MV = 'MV10R00'
     
     LEARNING_RATE = 0.001
     OV = 'OV01R00'
 
     START_EP = 0
-    END_EP = 3
+    END_EP = 40
     BATCH_SIZE = 192
     LOAD_MODEL = None
-    SAVE_MODEL = 'TR060'
+    SAVE_MODEL = 'TR063'
     
     SUBMISSION_MODE = False
-    GPU = False
+    GPU = True
     
     if KAGGLE_MODE:
         SUBMISSION_MODE = True
@@ -148,10 +150,8 @@ def load_data(file_name, sep):
     if id_column is not None:
         data['item_id'] = data[id_column]
     
-        #data.drop(columns=[id_column], inplace=True)
         data.drop(id_column, axis=1, inplace=True)
-        
-                  
+                          
     data.set_index(['item_id'], inplace=True)
     
     data.sort_index(inplace=True)
@@ -354,6 +354,9 @@ def build_category2index(data, category):
 
     category2index[category + '_id'] = [i for i in range(1, len(category2index) + 1)]
 
+    category2index.at['___OOV___', category + '_id'] = 0
+    category2index.at['___OOV___', category + '_cnt'] = 0
+
     category2index.sort_values(by=category + '_id', inplace=True)
     category2index = category2index.astype('int32')
 
@@ -362,7 +365,6 @@ def build_category2index(data, category):
 
 def categorize_column(data, category, cat2i):
     if (category + '_id') in data.columns:
-        #data.drop(columns=category + '_id', inplace=True)
         data.drop(category + '_id', axis=1, inplace=True)
 
     data = pd.merge(data, cat2i, left_on=category + '_name', right_index=True, how='left')
@@ -371,7 +373,6 @@ def categorize_column(data, category, cat2i):
     
     data[category + '_id'] = data[category + '_id'].astype(dtype='int32')    
 
-    #data.drop(columns=[category + '_cnt'], inplace=True)
     data.drop(category + '_cnt', axis=1, inplace=True)
     
     return data
@@ -691,20 +692,25 @@ def get_data_packages(data_file, name_index_file, item_desc_index_file, submissi
     return x_name_seq, x_item_desc_seq, x_cat, x_brand, x_cond, x_ship, y, item_id
 
 
-def root_mean_squared_logarithmic_error(y_true, y_pred):
-    ret = losses.mean_squared_logarithmic_error(y_true, y_pred)
-    return K.sqrt(ret)
+def old_kpi(y_true, y_pred):
+    return K.sqrt(mean_squared_logarithmic_error(y_true, y_pred))
 
 
-def root_mean_squared_error(y_true, y_pred):
-    ret = losses.mean_squared_error(y_true, y_pred)
-    return K.sqrt(ret)
+def mean_squared_logarithmic_error(y_true, y_pred):
+    first_log = K.log(K.clip(y_pred, K.epsilon(), None) + 1.)
+    second_log = K.log(K.clip(y_true, K.epsilon(), None) + 1.)
+    return K.mean(K.square(first_log - second_log), axis=-1)
+
+
+def mean_squared_error(y_true, y_pred):
+    return losses.mean_squared_error(y_true, y_pred)
 
 
 def load_keras_model(model_file):
-    model = load_model(os.path.join(MerLConfig.INPUT_DIR, model_file), 
-                       custom_objects={'root_mean_squared_error': root_mean_squared_error,
-                                       'root_mean_squared_logarithmic_error': root_mean_squared_logarithmic_error})
+    model = load_model(os.path.join(MerLConfig.OUTPUT_DIR, model_file), 
+                       custom_objects={'mean_squared_error': mean_squared_error,
+                                       'old_kpi': old_kpi,
+                                       'mean_squared_logarithmic_error': mean_squared_logarithmic_error})
     
     return model
     
@@ -715,22 +721,22 @@ def save_keras_model(model, model_file):
 
 def create_LSTM(units, name):
     if MerLConfig.GPU:
-        return kl.CuDNNLSTM(units=units, 
-                           kernel_initializer='glorot_uniform', 
-                           recurrent_initializer='orthogonal', 
-                           bias_initializer='zeros', 
-                           unit_forget_bias=True, 
-                           kernel_regularizer=None, 
-                           recurrent_regularizer=None, 
-                           bias_regularizer=None, 
-                           activity_regularizer=None, 
-                           kernel_constraint=None, 
-                           recurrent_constraint=None, 
-                           bias_constraint=None, 
-                           return_sequences=False, 
-                           return_state=False, 
-                           stateful=False,
-                           name=name)
+        #return kl.CuDNNLSTM(units=units, 
+         #                  kernel_initializer='glorot_uniform', 
+          #                 recurrent_initializer='orthogonal', 
+           #                bias_initializer='zeros', 
+            #               unit_forget_bias=True, 
+             #              kernel_regularizer=None, 
+              #             recurrent_regularizer=None, 
+               #            bias_regularizer=None, 
+                #           activity_regularizer=None, 
+                 #          kernel_constraint=None, 
+                  #         recurrent_constraint=None, 
+                   #        bias_constraint=None, 
+                    #       return_sequences=False, 
+                     #      return_state=False, 
+                      #     stateful=False,
+                       #    name=name)
     #else:
      #   return kl.LSTM(units=units, 
       #                 activation='tanh', recurrent_activation='hard_sigmoid', 
@@ -744,6 +750,12 @@ def create_LSTM(units, name):
               #         dropout=0.0, recurrent_dropout=0.0, implementation=1, 
                #        return_sequences=False, return_state=False, 
                 #       go_backwards=False, stateful=False, unroll=False, name=name)
+    
+        return kl.CuDNNGRU(units=units, kernel_initializer='glorot_uniform', recurrent_initializer='orthogonal',
+                           bias_initializer='zeros', kernel_regularizer=None, recurrent_regularizer=None,
+                           bias_regularizer=None, activity_regularizer=None, kernel_constraint=None,
+                           recurrent_constraint=None, bias_constraint=None, return_sequences=False, 
+                           return_state=False, stateful=False, name=name)
     
     return kl.GRU(units=units, 
                   activation='tanh', recurrent_activation='hard_sigmoid', 
@@ -771,15 +783,16 @@ def build_keras_model(word_embedding_dims,
                  weights=[emb_matrix_item_desc], trainable=True, name='item_desc_embedding')
     item_desc_embedding_dropout = kl.SpatialDropout1D(0.5, name='item_desc_embedding_dropout')
     #item_desc_lstm_1 = kl.CuDNNLSTM(units=200, name='item_desc_lstm_1', return_sequences=True)
-    item_desc_lstm_2 = create_LSTM(units=200, name='item_desc_lstm_2')
+    item_desc_lstm_2 = create_LSTM(units=300, name='item_desc_lstm_2')
     item_desc_lstm_dropout = kl.Dropout(0.5, name='item_desc_lstm_dropout')
 
     name_embedding = kl.Embedding(num_words_name, word_embedding_dims, 
                                   weights=[emb_matrix_name], trainable=True, name='name_embedding')
     name_embedding_dropout = kl.SpatialDropout1D(0.5, name='name_embedding_dropout')
     #name_lstm_1 = kl.CuDNNLSTM(units=100, name='name_lstm_1', return_sequences=True)
-    name_lstm_2 = create_LSTM(units=100, name='name_lstm_2')
+    name_lstm_2 = create_LSTM(units=150, name='name_lstm_2')
     name_lstm_dropout = kl.Dropout(0.5, name='name_lstm_dropout')
+
 
     category_embedding = kl.Embedding(num_categories + 1, cat_embedding_dims, name='category_embedding')
     category_embedding_dropout = kl.Dropout(0.5, name='category_embedding_dropout')
@@ -789,12 +802,16 @@ def build_keras_model(word_embedding_dims,
     brand_embedding_dropout = kl.Dropout(0.5, name='brand_embedding_dropout')
     brand_reshape = kl.Reshape(target_shape=(cat_embedding_dims,), name='brand_reshape')
 
-    fusion_dim = max_seq_len_name + max_seq_len_item_desc + 2 * cat_embedding_dims + 2
-    
     input_fusion = kl.Concatenate(axis=1, name='input_fusion')
-    fusion_dense_1 = kl.Dense(fusion_dim, activation='relu', name='fusion_dense_1')
-    fusion_dense_2 = kl.Dense(200, activation='relu', name='fusion_dense_2')
-    fusion_dense_3 = kl.Dense(1, activation='relu', name='fusion_dense_3')
+    fusion_dense_1 = kl.Dense(400, activation='relu', name='fusion_dense_1')
+    fusion_dropout_1 = kl.Dropout(0.5, name='fusion_dropout_1')
+    fusion_dense_2 = kl.Dense(300, activation='relu', name='fusion_dense_2')
+    fusion_dropout_2 = kl.Dropout(0.5, name='fusion_dropout_2')
+    fusion_dense_3 = kl.Dense(200, activation='relu', name='fusion_dense_3')
+    fusion_dropout_3 = kl.Dropout(0.5, name='fusion_dropout_3')
+    fusion_dense_4 = kl.Dense(100, activation='relu', name='fusion_dense_4')
+    fusion_dropout_4 = kl.Dropout(0.5, name='fusion_dropout_4')
+    fusion_dense_5 = kl.Dense(1, activation='relu', name='fusion_dense_5')
 
     item_desc_output = item_desc_embedding(item_desc_input)
     item_desc_output = item_desc_embedding_dropout(item_desc_output)
@@ -819,8 +836,14 @@ def build_keras_model(word_embedding_dims,
     output = input_fusion([cond_input, ship_input, name_output, item_desc_output, 
                            category_output, brand_output])
     output = fusion_dense_1(output)
+    output = fusion_dropout_1(output)
     output = fusion_dense_2(output)
-    prediction = fusion_dense_3(output)
+    output = fusion_dropout_2(output)
+    output = fusion_dense_3(output)
+    output = fusion_dropout_3(output)
+    output = fusion_dense_4(output)
+    output = fusion_dropout_4(output)
+    prediction = fusion_dense_5(output)
 
     model = km.Model(inputs=[cond_input, ship_input, category_input, brand_input, name_input, item_desc_input],
                      outputs=prediction)
@@ -832,15 +855,24 @@ def compile_keras_model(model):
     adam = keras.optimizers.Adam(lr=MerLConfig.LEARNING_RATE, beta_1=0.9, beta_2=0.999, 
                                  decay=0.00, clipvalue=0.5) #epsilon=None (doesn't work)
     
-    model.compile(optimizer=adam, loss=root_mean_squared_logarithmic_error, metrics=None) #[root_mean_squared_error])
+    model.compile(optimizer=adam, loss=mean_squared_logarithmic_error, 
+                  metrics=[old_kpi, mean_squared_error])
 
     return model
 
 
 def lr_schedule(ep):
-    lr = MerLConfig.LEARNING_RATE * (1 - ep/10)
+    #lr = MerLConfig.LEARNING_RATE / (ep)
+    if ep < 10:
+        lr = 0.001
+    elif ep < 20:
+        lr = 0.00055
+    elif ep < 30:
+        lr = 0.0001
+    else:
+        lr = 0.000055
     
-    logger.info('New learning rate: %01.10f', lr)
+    logger.info('New learning rate for epoch %i: %01.10f', ep, lr)
     
     return lr
 
