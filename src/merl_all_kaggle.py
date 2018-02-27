@@ -22,8 +22,6 @@ from keras.preprocessing import sequence
 from keras.preprocessing.text import Tokenizer
 from keras import backend as K
 
-import tensorflow as tf
-
 
 DEFAULT_LOGGING = {
     'version': 1,
@@ -68,50 +66,55 @@ class MerLConfig:
     TRAIN_PREP_FILE = "mercari_train_prep"
     TRAIN_NAME_INDEX_FILE = "mercari_train_name_index"
     TRAIN_ITEM_DESC_INDEX_FILE = "mercari_train_item_desc_index"
+    TRAIN_CAT_INDEX_FILE = "mercari_train_cat_index"
     VAL_PREP_FILE = "mercari_val_prep"
     VAL_NAME_INDEX_FILE = "mercari_val_name_index"
     VAL_ITEM_DESC_INDEX_FILE = "mercari_val_item_desc_index"
+    VAL_CAT_INDEX_FILE = "mercari_val_cat_index"
     TEST_PREP_FILE = "mercari_test_prep"
     TEST_NAME_INDEX_FILE = "mercari_test_name_index"
     TEST_ITEM_DESC_INDEX_FILE = "mercari_test_item_desc_index"
+    TEST_CAT_INDEX_FILE = "mercari_test_cat_index"
     SUB_FILE = "mercari-price-suggestion-challenge/test.tsv"
     SUB_PREP_FILE = "mercari_sub_prep"
     SUB_NAME_INDEX_FILE = "mercari_sub_name_index"
     SUB_ITEM_DESC_INDEX_FILE = "mercari_sub_item_desc_index"
+    SUB_CAT_INDEX_FILE = "mercari_sub_cat_index"
 
     EMB_ITEM_DESC_FILE = "mercari_emb_item_desc"
     EMB_NAME_FILE = "mercari_emb_name"
+    EMB_CAT_FILE =  "mercari_emb_category"
     
     CAT_CAT2I_FILE = 'mercari_cat_cat2i'
     BRAND_CAT2I_FILE = 'mercari_brand_cat2i'
 
     EMPTY = '___VERY_EMPTY___'
 
-    TRAIN_SIZE = 0.4
+    TRAIN_SIZE = 0.18
     VAL_SIZE = 0.02
-    TEST_SIZE = 0.02
+    TEST_SIZE = 0.01
     DP = 'DP05R00'
     
     EMBED_FILE ='glove-global-vectors-for-word-representation/glove.6B.100d.txt'
 
-    MAX_WORDS_FROM_INDEX_ITEM_DESC = 40000
-    MAX_WORDS_FROM_INDEX_NAME = 40000
-    MAX_WORDS_IN_ITEM_DESC = 100
+    MAX_WORDS_FROM_INDEX_ITEM_DESC = 20000
+    MAX_WORDS_FROM_INDEX_NAME = 20000
+    MAX_WORDS_IN_ITEM_DESC = 50
     MAX_WORDS_IN_NAME = 20
-    WP = 'WP09R00'
+    WP = 'WP08R00'
 
     WORD_EMBED_DIMS = 100
     CAT_EMBED_DIMS = 20
-    MV = 'MV10R00'
+    MV = 'MV08R00'
     
     LEARNING_RATE = 0.001
     OV = 'OV01R00'
 
     START_EP = 0
-    END_EP = 40
+    END_EP = 3
     BATCH_SIZE = 192
     LOAD_MODEL = None
-    SAVE_MODEL = 'TR063'
+    SAVE_MODEL = 'TR060'
     
     SUBMISSION_MODE = False
     GPU = True
@@ -315,9 +318,11 @@ def execute_data_initialization(train_data, sub_data):
 
     logger.info("Splitting prepared training data ...")
 
-    bins = np.linspace(train_data.price.min(), 1000, 10)
-
-    train_data, _, val_data, _, test_data, _ = split_data(X=train_data, y=np.digitize(train_data.price, bins),
+    bins = np.linspace(start=train_data.price.min(), stop=200, num=30)
+    
+    y = np.digitize(train_data.price, bins)
+    
+    train_data, _, val_data, _, test_data, _ = split_data(X=train_data, y=y,
                                          train_size=MerLConfig.TRAIN_SIZE, val_size=MerLConfig.VAL_SIZE, 
                                          test_size=MerLConfig.TEST_SIZE)
 
@@ -431,7 +436,12 @@ def execute_categorization(train_data, val_data, test_data, sub_data, category, 
 
 
 def build_tokenizer(items, max_words_from_index):
-    tokenizer = Tokenizer(num_words=max_words_from_index)    
+    filters = '!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~\t\n'
+
+    filters = '!"#$%()*+,./:;<=>?@\\^`{|}~\t\n'
+
+
+    tokenizer = Tokenizer(num_words=max_words_from_index, filters=filters)    
     
     tokenizer.fit_on_texts(items.values)    
     
@@ -449,11 +459,14 @@ def build_emb_matrix(tokenizer, max_words_from_index):
     all_embs = np.stack(embeddings_index.values())
     emb_mean = all_embs.mean()
     emb_std = all_embs.std()
-
-    embedding_matrix = np.random.normal(emb_mean, emb_std, (max_words_from_index, MerLConfig.WORD_EMBED_DIMS))
+    
+    logger.info("Embedding matrix mean, std: %s, %s", str(emb_mean), str(emb_std))
     
     word_index = tokenizer.word_index
-    
+
+    if max_words_from_index is None:
+        max_words_from_index = len(word_index)
+
     nb_words = min(max_words_from_index, len(word_index))
     
     embedding_matrix = np.random.normal(emb_mean, emb_std, (nb_words, MerLConfig.WORD_EMBED_DIMS))
@@ -502,9 +515,10 @@ def save_emb_matrix(embedding_matrix, file_name):
     embedding_matrix.to_csv(path_or_buf=os.path.join(MerLConfig.OUTPUT_DIR, file_name))   
 
 
-def execute_word2i(name, item_desc, embedding, train_data):
+def execute_word2i(name, item_desc, category, embedding, train_data):
     tokenizer_name = None
     tokenizer_item_desc = None
+    tokenizer_cat = None
 
     if name:
         then = time()
@@ -562,7 +576,35 @@ def execute_word2i(name, item_desc, embedding, train_data):
 
         logger.info("Executing w2i for item_description done in %s.", time_it(then, time()))     
 
-    return tokenizer_name, tokenizer_item_desc
+    if category:
+        then = time()
+
+        logger.info("Executing w2i for category ...")
+
+        logger.info("Building tokenizer for category ...")
+
+        tokenizer_cat = build_tokenizer(items=train_data['category_name'],
+                                         max_words_from_index=None)
+
+        logger.info("Building tokenizer for category done.")
+
+        if embedding:
+            logger.info("Building embedding matrix for category ...")
+
+            emb_matrix_cat = build_emb_matrix(tokenizer=tokenizer_cat,
+                                              max_words_from_index=None)
+
+            logger.info("Building embedding matrix for category done.")
+
+            logger.info("Saving embedding matrix for category ...")
+
+            save_emb_matrix(emb_matrix_cat, MerLConfig.EMB_CAT_FILE)
+
+            logger.info("Saving embedding matrix for category done.")
+        
+        logger.info("Executing w2i for category done in %s.", time_it(then, time()))     
+
+    return tokenizer_name, tokenizer_item_desc, tokenizer_cat
 
 
 def build_index_data(data, tokenizer, col_name, max_words):
@@ -601,7 +643,7 @@ def save_index_data(index_data, file_name):
     index_data.to_csv(path_or_buf=os.path.join(MerLConfig.OUTPUT_DIR, file_name))   
                               
                                 
-def execute_indexation(train_data, val_data, test_data, sub_data, tokenizer_name, tokenizer_item_desc):
+def execute_indexation(train_data, val_data, test_data, sub_data, tokenizer_name, tokenizer_item_desc, tokenizer_cat):
     logger.info("Starting indexation ...")
 
     then = time()
@@ -616,22 +658,27 @@ def execute_indexation(train_data, val_data, test_data, sub_data, tokenizer_name
     if train_data is not None:
         train_prop = {'data': train_data,
                       'name_file': MerLConfig.TRAIN_NAME_INDEX_FILE,
-                      'id_file': MerLConfig.TRAIN_ITEM_DESC_INDEX_FILE}
+                      'id_file': MerLConfig.TRAIN_ITEM_DESC_INDEX_FILE,
+                      'cat_file': MerLConfig.TRAIN_CAT_INDEX_FILE}
 
     if val_data is not None:
         val_prop = {'data': val_data,
                     'name_file': MerLConfig.VAL_NAME_INDEX_FILE,
-                    'id_file': MerLConfig.VAL_ITEM_DESC_INDEX_FILE}
-
+                    'id_file': MerLConfig.VAL_ITEM_DESC_INDEX_FILE,
+                    'cat_file': MerLConfig.VAL_CAT_INDEX_FILE}
+        
     if test_data is not None:
         test_prop = {'data': test_data,
                      'name_file': MerLConfig.TEST_NAME_INDEX_FILE,
-                     'id_file': MerLConfig.TEST_ITEM_DESC_INDEX_FILE}
+                     'id_file': MerLConfig.TEST_ITEM_DESC_INDEX_FILE,
+                     'cat_file': MerLConfig.TEST_CAT_INDEX_FILE}
+
 
     if sub_data is not None:
         sub_prop = {'data': sub_data,
                     'name_file': MerLConfig.SUB_NAME_INDEX_FILE,
-                    'id_file': MerLConfig.SUB_ITEM_DESC_INDEX_FILE}
+                    'id_file': MerLConfig.SUB_ITEM_DESC_INDEX_FILE,
+                    'cat_file': MerLConfig.SUB_CAT_INDEX_FILE}
 
     if tokenizer_name:
         name_prop = {'tokenizer': tokenizer_name, 'col_name': 'name',
@@ -641,14 +688,20 @@ def execute_indexation(train_data, val_data, test_data, sub_data, tokenizer_name
         item_desc_prop = {'tokenizer': tokenizer_item_desc, 'col_name': 'item_description',
                           'max_words': MerLConfig.MAX_WORDS_IN_ITEM_DESC}
    
+    if tokenizer_cat:
+        cat_prop = {'tokenizer': tokenizer_cat, 'col_name': 'category_name',
+                     'max_words': MerLConfig.MAX_WORDS_IN_NAME}
+
     for data_prop in [train_prop, val_prop, test_prop, sub_prop]:
         if data_prop is not None:
-            for w2i_prop in [name_prop, item_desc_prop]:
+            for w2i_prop in [name_prop, item_desc_prop, cat_prop]:
                 if w2i_prop is not None:
                     if w2i_prop['col_name'] == 'name':
                         file_name = data_prop['name_file']
-                    else:    
+                    elif w2i_prop['col_name'] == 'item_description':
                         file_name = data_prop['id_file']
+                    else:    
+                        file_name = data_prop['cat_file']
                         
                     data = data_prop['data']
                     col_name = w2i_prop['col_name']
@@ -670,13 +723,15 @@ def execute_indexation(train_data, val_data, test_data, sub_data, tokenizer_name
     logger.info("Done with indexation in %s.", time_it(then, time()))    
 
 
-def get_data_packages(data_file, name_index_file, item_desc_index_file, submission):
+def get_data_packages(data_file, name_index_file, item_desc_index_file, category_index_file, submission):
     data = load_data(data_file, sep=',')
     name_seq = load_index_data(name_index_file)
     item_desc_seq = load_index_data(item_desc_index_file)
+    category_seq = load_index_data(category_index_file)
 
     x_name_seq = name_seq.as_matrix()
     x_item_desc_seq = item_desc_seq.as_matrix()
+    x_cat_seq = category_seq.as_matrix()
     x_cat = data['category_id'].as_matrix()
     x_brand = data['brand_id'].as_matrix()
     x_cond = data['item_condition_id'].as_matrix()    
@@ -689,28 +744,16 @@ def get_data_packages(data_file, name_index_file, item_desc_index_file, submissi
     
     item_id = data.index.values
         
-    return x_name_seq, x_item_desc_seq, x_cat, x_brand, x_cond, x_ship, y, item_id
-
-
-def old_kpi(y_true, y_pred):
-    return K.sqrt(mean_squared_logarithmic_error(y_true, y_pred))
+    return x_name_seq, x_item_desc_seq, x_cat_seq, x_cat, x_brand, x_cond, x_ship, y, item_id
 
 
 def mean_squared_logarithmic_error(y_true, y_pred):
-    first_log = K.log(K.clip(y_pred, K.epsilon(), None) + 1.)
-    second_log = K.log(K.clip(y_true, K.epsilon(), None) + 1.)
-    return K.mean(K.square(first_log - second_log), axis=-1)
-
-
-def mean_squared_error(y_true, y_pred):
-    return losses.mean_squared_error(y_true, y_pred)
+    return losses.mean_squared_logarithmic_error(y_true, y_pred)
 
 
 def load_keras_model(model_file):
-    model = load_model(os.path.join(MerLConfig.OUTPUT_DIR, model_file), 
-                       custom_objects={'mean_squared_error': mean_squared_error,
-                                       'old_kpi': old_kpi,
-                                       'mean_squared_logarithmic_error': mean_squared_logarithmic_error})
+    model = load_model(os.path.join(MerLConfig.INPUT_DIR, model_file), 
+                       custom_objects={'mean_squared_logarithmic_error': mean_squared_logarithmic_error})
     
     return model
     
@@ -739,6 +782,7 @@ def create_LSTM(units, name):
 def build_keras_model(word_embedding_dims, 
                       num_words_name, emb_matrix_name, max_seq_len_name, 
                       num_words_item_desc, emb_matrix_item_desc, max_seq_len_item_desc,
+                      emb_matrix_cat,
                       cat_embedding_dims,
                       num_categories, num_brands):
     
@@ -748,52 +792,55 @@ def build_keras_model(word_embedding_dims,
     brand_input = kl.Input(shape=(1,), name='brand_input')
     item_desc_input = kl.Input(shape=(max_seq_len_item_desc,), name='item_desc_input')
     name_input = kl.Input(shape=(max_seq_len_name,), name='name_input')
+    cat_seq_input = kl.Input(shape=(max_seq_len_name,), name='cat_seq_input')
 
     item_desc_embedding = kl.Embedding(num_words_item_desc, word_embedding_dims, 
                  weights=[emb_matrix_item_desc], trainable=True, name='item_desc_embedding')
-    item_desc_embedding_dropout = kl.SpatialDropout1D(0.5, name='item_desc_embedding_dropout')
-    #item_desc_lstm_1 = kl.CuDNNLSTM(units=200, name='item_desc_lstm_1', return_sequences=True)
-    item_desc_lstm_2 = create_LSTM(units=300, name='item_desc_lstm_2')
-    item_desc_lstm_dropout = kl.Dropout(0.5, name='item_desc_lstm_dropout')
+    item_desc_embedding_dropout = kl.SpatialDropout1D(0.1, name='item_desc_embedding_dropout')
+    item_desc_lstm_1 = create_LSTM(units=200, name='item_desc_lstm_1')
+    item_desc_lstm_dropout = kl.Dropout(0.2, name='item_desc_lstm_dropout')
 
     name_embedding = kl.Embedding(num_words_name, word_embedding_dims, 
                                   weights=[emb_matrix_name], trainable=True, name='name_embedding')
-    name_embedding_dropout = kl.SpatialDropout1D(0.5, name='name_embedding_dropout')
-    #name_lstm_1 = kl.CuDNNLSTM(units=100, name='name_lstm_1', return_sequences=True)
-    name_lstm_2 = create_LSTM(units=150, name='name_lstm_2')
-    name_lstm_dropout = kl.Dropout(0.5, name='name_lstm_dropout')
+    name_embedding_dropout = kl.SpatialDropout1D(0.1, name='name_embedding_dropout')
+    name_lstm_1 = create_LSTM(units=100, name='name_lstm_1')
+    name_lstm_dropout = kl.Dropout(0.2, name='name_lstm_dropout')
 
+    cat_seq_embedding = kl.Embedding(emb_matrix_cat.shape[0], word_embedding_dims, 
+                                  weights=[emb_matrix_cat], trainable=True, name='cat_seq_embedding')
+    cat_seq_embedding_dropout = kl.SpatialDropout1D(0.1, name='cat_seq_embedding_dropout')
+    cat_seq_lstm_1 = create_LSTM(units=100, name='cat_seq_lstm_1')
+    cat_seq_lstm_dropout = kl.Dropout(0.2, name='cat_seq_lstm_dropout')
 
-    category_embedding = kl.Embedding(num_categories + 1, cat_embedding_dims, name='category_embedding')
-    category_embedding_dropout = kl.Dropout(0.5, name='category_embedding_dropout')
+    category_embedding = kl.Embedding(num_categories, cat_embedding_dims, trainable=True, name='category_embedding')
+    category_embedding_dropout = kl.Dropout(0.2, name='category_embedding_dropout')
     category_reshape = kl.Reshape(target_shape=(cat_embedding_dims,), name='category_reshape')
 
-    brand_embedding = kl.Embedding(num_brands + 1, cat_embedding_dims, name='brand_embedding')
-    brand_embedding_dropout = kl.Dropout(0.5, name='brand_embedding_dropout')
+    brand_embedding = kl.Embedding(num_brands, cat_embedding_dims, trainable=True, name='brand_embedding')
+    brand_embedding_dropout = kl.Dropout(0.2, name='brand_embedding_dropout')
     brand_reshape = kl.Reshape(target_shape=(cat_embedding_dims,), name='brand_reshape')
 
     input_fusion = kl.Concatenate(axis=1, name='input_fusion')
     fusion_dense_1 = kl.Dense(400, activation='relu', name='fusion_dense_1')
-    fusion_dropout_1 = kl.Dropout(0.5, name='fusion_dropout_1')
-    fusion_dense_2 = kl.Dense(300, activation='relu', name='fusion_dense_2')
-    fusion_dropout_2 = kl.Dropout(0.5, name='fusion_dropout_2')
-    fusion_dense_3 = kl.Dense(200, activation='relu', name='fusion_dense_3')
-    fusion_dropout_3 = kl.Dropout(0.5, name='fusion_dropout_3')
-    fusion_dense_4 = kl.Dense(100, activation='relu', name='fusion_dense_4')
-    fusion_dropout_4 = kl.Dropout(0.5, name='fusion_dropout_4')
-    fusion_dense_5 = kl.Dense(1, activation='relu', name='fusion_dense_5')
+    fusion_dropout_1 = kl.Dropout(0.2, name='fusion_dropout_1')
+    fusion_dense_2 = kl.Dense(200, activation='relu', name='fusion_dense_2')
+    fusion_dropout_2 = kl.Dropout(0.2, name='fusion_dropout_2')
+    fusion_dense_3 = kl.Dense(1, activation='relu', name='fusion_dense_3')
 
     item_desc_output = item_desc_embedding(item_desc_input)
     #item_desc_output = item_desc_embedding_dropout(item_desc_output)
-    #item_desc_output = item_desc_lstm_1(item_desc_output)
-    item_desc_output = item_desc_lstm_2(item_desc_output)
+    item_desc_output = item_desc_lstm_1(item_desc_output)
     item_desc_output = item_desc_lstm_dropout(item_desc_output)
 
     name_output = name_embedding(name_input)
     #name_output = name_embedding_dropout(name_output)
-    #name_output = name_lstm_1(name_output)
-    name_output = name_lstm_2(name_output)
+    name_output = name_lstm_1(name_output)
     name_output = name_lstm_dropout(name_output)
+
+    cat_seq_output = cat_seq_embedding(cat_seq_input)
+    #name_output = name_embedding_dropout(name_output)
+    cat_seq_output = cat_seq_lstm_1(cat_seq_output)
+    cat_seq_output = cat_seq_lstm_dropout(cat_seq_output)
 
     category_output = category_embedding(category_input)
     category_output = category_embedding_dropout(category_output)
@@ -803,19 +850,15 @@ def build_keras_model(word_embedding_dims,
     brand_output = brand_embedding_dropout(brand_output)
     brand_output = brand_reshape(brand_output)
 
-    output = input_fusion([cond_input, ship_input, name_output, item_desc_output, 
+    output = input_fusion([cond_input, ship_input, name_output, item_desc_output, cat_seq_output,
                            category_output, brand_output])
     output = fusion_dense_1(output)
     output = fusion_dropout_1(output)
     output = fusion_dense_2(output)
     output = fusion_dropout_2(output)
-    output = fusion_dense_3(output)
-    output = fusion_dropout_3(output)
-    output = fusion_dense_4(output)
-    output = fusion_dropout_4(output)
-    prediction = fusion_dense_5(output)
+    prediction = fusion_dense_3(output)
 
-    model = km.Model(inputs=[cond_input, ship_input, category_input, brand_input, name_input, item_desc_input],
+    model = km.Model(inputs=[cond_input, ship_input, category_input, brand_input, name_input, item_desc_input, cat_seq_input],
                      outputs=prediction)
 
     return model    
@@ -823,44 +866,42 @@ def build_keras_model(word_embedding_dims,
 
 def compile_keras_model(model):
     adam = keras.optimizers.Adam(lr=MerLConfig.LEARNING_RATE, beta_1=0.9, beta_2=0.999, 
-                                 decay=0.00, clipvalue=0.5) #epsilon=None (doesn't work)
+                                 decay=0.00, clipnorm=1.0) #epsilon=None (doesn't work)
     
-    model.compile(optimizer=adam, loss=mean_squared_logarithmic_error, 
-                  metrics=[old_kpi, mean_squared_error])
+    rms = keras.optimizers.RMSprop(lr=0.001, rho=0.9, epsilon=None, decay=0.0, clipvalue=0.5)
+    
+    model.compile(optimizer=adam, loss=mean_squared_logarithmic_error, metrics=None) #[root_mean_squared_error])
 
     return model
 
 
 def lr_schedule(ep):
-    #lr = MerLConfig.LEARNING_RATE / (ep)
-    if ep < 10:
-        lr = 0.001
-    elif ep < 20:
-        lr = 0.00055
-    elif ep < 30:
-        lr = 0.0001
+    if ep < 1:
+        lr = MerLConfig.LEARNING_RATE
     else:
-        lr = 0.000055
+        lr = MerLConfig.LEARNING_RATE / 10
     
-    logger.info('New learning rate for epoch %i: %01.10f', ep, lr)
+    logger.info('New learning rate: %01.10f', lr)
     
     return lr
 
 
 def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, submission):
-    x_name_seq_t, x_item_desc_seq_t, x_cat_t, x_brand_t, x_cond_t, x_ship_t, y_t, _ = get_data_packages(
+    x_name_seq_t, x_item_desc_seq_t, x_cat_seq_t, x_cat_t, x_brand_t, x_cond_t, x_ship_t, y_t, _ = get_data_packages(
         MerLConfig.TRAIN_PREP_FILE, 
         MerLConfig.TRAIN_NAME_INDEX_FILE,
         MerLConfig.TRAIN_ITEM_DESC_INDEX_FILE, 
+        MerLConfig.TRAIN_CAT_INDEX_FILE, 
         submission=False)
     
-    x_name_seq_v, x_item_desc_seq_v, x_cat_v, x_brand_v, x_cond_v, x_ship_v, y_v, _ = get_data_packages(
+    x_name_seq_v, x_item_desc_seq_v, x_cat_seq_v, x_cat_v, x_brand_v, x_cond_v, x_ship_v, y_v, _ = get_data_packages(
         MerLConfig.VAL_PREP_FILE, 
         MerLConfig.VAL_NAME_INDEX_FILE,
         MerLConfig.VAL_ITEM_DESC_INDEX_FILE, 
+        MerLConfig.VAL_CAT_INDEX_FILE, 
         submission=False)
         
-    val_data = [[x_cond_v, x_ship_v, x_cat_v, x_brand_v, x_name_seq_v, x_item_desc_seq_v], y_v]
+    val_data = [[x_cond_v, x_ship_v, x_cat_v, x_brand_v, x_name_seq_v, x_item_desc_seq_v, x_cat_seq_v], y_v]
 
     if build_on_model is None:
         emb_matrix_item_desc = load_emb_matrix(MerLConfig.EMB_ITEM_DESC_FILE)
@@ -871,6 +912,8 @@ def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, subm
         max_words_name = MerLConfig.MAX_WORDS_FROM_INDEX_NAME
         max_seq_len_name = MerLConfig.MAX_WORDS_IN_NAME
         
+        emb_matrix_cat = load_emb_matrix(MerLConfig.EMB_CAT_FILE)
+
         num_categories = len(load_cat2i(MerLConfig.CAT_CAT2I_FILE))
         num_brands = len(load_cat2i(MerLConfig.BRAND_CAT2I_FILE))
         
@@ -883,6 +926,7 @@ def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, subm
                                   num_words_item_desc=max_words_item_desc, 
                                   emb_matrix_item_desc=emb_matrix_item_desc, 
                                   max_seq_len_item_desc=max_seq_len_item_desc,
+                                  emb_matrix_cat=emb_matrix_cat, 
                                   cat_embedding_dims=MerLConfig.CAT_EMBED_DIMS,
                                   num_categories=num_categories, 
                                   num_brands=num_brands)
@@ -910,7 +954,7 @@ def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, subm
         callbacks.append(mc_callback)
 
     history_simple = model.fit(
-        x=[x_cond_t, x_ship_t, x_cat_t, x_brand_t, x_name_seq_t, x_item_desc_seq_t], y=y_t,
+        x=[x_cond_t, x_ship_t, x_cat_t, x_brand_t, x_name_seq_t, x_item_desc_seq_t, x_cat_seq_t], y=y_t,
         batch_size=MerLConfig.BATCH_SIZE,
         epochs=end_epoch,
         verbose=1 if not submission else 2,
@@ -926,14 +970,15 @@ def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, subm
         logger.info("Validation ...")    
 
         result = model.evaluate(x=[x_cond_v, x_ship_v, x_cat_v, x_brand_v, x_name_seq_v, x_item_desc_seq_v],
-                       y=y_v, batch_size=None, verbose=1, sample_weight=None, steps=None)
+                       y=y_v, batch_size=None, verbose=1 if not submission else 2, 
+                       sample_weight=None, steps=None)
 
         logger.info("Validation done in %s. Result: %01.4f", time_it(then, time()), result)    
     
     return model
 
 
-def execute_test(model):
+def execute_test(model, submission):
     x_name_seq, x_item_desc_seq, x_cat, x_brand, x_cond, x_ship, y, _ = get_data_packages(
         MerLConfig.TEST_PREP_FILE, 
         MerLConfig.TEST_NAME_INDEX_FILE,
@@ -941,7 +986,8 @@ def execute_test(model):
         submission=False)
     
     result = model.evaluate(x=[x_cond, x_ship, x_cat, x_brand, x_name_seq, x_item_desc_seq],
-                   y=y, batch_size=None, verbose=1, sample_weight=None, steps=None)
+                   y=y, batch_size=None, verbose=1 if not submission else 2,
+                   sample_weight=None, steps=None)
     
     return result
 
@@ -954,7 +1000,7 @@ def execute_submission(model):
         submission=True)
     
     y_pred = model.predict(x=[x_cond, x_ship, x_cat, x_brand, x_name_seq, x_item_desc_seq], 
-                  batch_size=None, verbose=1, steps=None)
+                  batch_size=None, verbose=2, steps=None)
 
     sub_results_data = pd.DataFrame(item_id)
     sub_results_data.columns = ['test_id']
@@ -1058,13 +1104,14 @@ def main():
         test_set = True
         sub_set = True
         
-    if (not brand and not category):
-        category = True
+    if (not brand and categorization):
+        #category = True
         brand = True
         
-    if (not name and not item_desc and (embedding or indexation)):
+    if (not name and not item_desc and not category and (embedding or indexation)):
         name = True
         item_desc = True
+        category = True
 
     embedding_only = embedding and not initialization and not categorization and not indexation
 
@@ -1101,7 +1148,8 @@ def main():
                 sub_data=sub_data if sub_set else None)
 
         if embedding or indexation:
-            tokenizer_name, tokenizer_item_desc = execute_word2i(name, item_desc, embedding, train_data)
+            tokenizer_name, tokenizer_item_desc, tokenizer_cat = execute_word2i(
+                name, item_desc, category, embedding, train_data)
 
         if indexation:
             execute_indexation(
@@ -1110,7 +1158,8 @@ def main():
                 test_data=test_data if test_set else None, 
                 sub_data=sub_data if sub_set else None, 
                 tokenizer_name=tokenizer_name if name else None, 
-                tokenizer_item_desc=tokenizer_item_desc if item_desc else None)
+                tokenizer_item_desc=tokenizer_item_desc if item_desc else None,
+                tokenizer_cat=tokenizer_cat if category else None)
 
         logger.info("Data preparation done in %s.", time_it(then, time()))  
 
@@ -1132,7 +1181,7 @@ def main():
 
         then = time()
 
-        result = execute_test(model)
+        result = execute_test(model, submission=submission)
     
         logger.info("Done executing test in %s. Result: %01.4f", time_it(then, time()), result)    
         
