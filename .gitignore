@@ -1,4 +1,6 @@
-*.pyc 
-.DS_Store
 **/.ipynb*
-.idea
+*.idea
+*.DS_Store
+*.pyc
+output/*
+input/*

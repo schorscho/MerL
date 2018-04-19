@@ -1,5 +1,6 @@
 import sys
 import os
+import math
 import operator
 import logging
 import logging.config
@@ -11,6 +12,7 @@ import pandas as pd
 import numpy as np
 
 from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.metrics import mean_squared_log_error
 
 import keras
 import keras.models as km
@@ -18,6 +20,7 @@ import keras.layers as kl
 import keras.constraints as kc
 from keras import losses
 from keras.models import load_model
+from keras.callbacks import Callback
 from keras.preprocessing import sequence
 from keras.preprocessing.text import Tokenizer
 from keras import backend as K
@@ -57,14 +60,14 @@ DEFAULT_LOGGING = {
 logging.config.dictConfig(DEFAULT_LOGGING)
 
 
-logger = logging.getLogger('MerL.data_preparation')
+logger = logging.getLogger('MerL')
 
 
 class MerLConfig:
-    KAGGLE_MODE = False
-    INPUT_DIR = '../input' if KAGGLE_MODE else '/home/ubuntu/data/MerL/input'
-    OUTPUT_DIR = '.' if KAGGLE_MODE else '/home/ubuntu/data/MerL'
-    TRAIN_FILE = "mercari-price-suggestion-challenge/train.tsv"
+    PROJECT_ROOT_DIR = os.environ['MERL_ROOT_DIR']
+    INPUT_DIR = os.path.join(PROJECT_ROOT_DIR, "input")
+    OUTPUT_DIR = os.path.join(PROJECT_ROOT_DIR, "output")
+    TRAIN_FILE = "train.tsv"
     TRAIN_PREP_FILE = "mercari_train_prep"
     TRAIN_NAME_INDEX_FILE = "mercari_train_name_index"
     TRAIN_ITEM_DESC_INDEX_FILE = "mercari_train_item_desc_index"
@@ -74,7 +77,7 @@ class MerLConfig:
     TEST_PREP_FILE = "mercari_test_prep"
     TEST_NAME_INDEX_FILE = "mercari_test_name_index"
     TEST_ITEM_DESC_INDEX_FILE = "mercari_test_item_desc_index"
-    SUB_FILE = "mercari-price-suggestion-challenge/test.tsv"
+    SUB_FILE = "test.tsv"
     SUB_PREP_FILE = "mercari_sub_prep"
     SUB_NAME_INDEX_FILE = "mercari_sub_name_index"
     SUB_ITEM_DESC_INDEX_FILE = "mercari_sub_item_desc_index"
@@ -87,12 +90,12 @@ class MerLConfig:
 
     EMPTY = '___VERY_EMPTY___'
 
-    TRAIN_SIZE = 0.4
+    TRAIN_SIZE = 0.8
     VAL_SIZE = 0.02
     TEST_SIZE = 0.02
     DP = 'DP05R00'
     
-    EMBED_FILE ='glove-global-vectors-for-word-representation/glove.6B.100d.txt'
+    EMBED_FILE ='glove.6B.100d.txt'
 
     MAX_WORDS_FROM_INDEX_ITEM_DESC = 40000
     MAX_WORDS_FROM_INDEX_NAME = 40000
@@ -113,12 +116,7 @@ class MerLConfig:
     LOAD_MODEL = None
     SAVE_MODEL = 'TR063'
     
-    SUBMISSION_MODE = False
     GPU = True
-    
-    if KAGGLE_MODE:
-        SUBMISSION_MODE = True
-        GPU = False
 
 
 def time_it(start, end):
@@ -719,12 +717,12 @@ def save_keras_model(model, model_file):
     model.save(os.path.join(MerLConfig.OUTPUT_DIR, model_file))
 
 
-def create_LSTM(units, name):
+def create_LSTM(units, return_sequences, name):
     if MerLConfig.GPU:
         return kl.CuDNNGRU(units=units, kernel_initializer='glorot_uniform', recurrent_initializer='orthogonal',
                            bias_initializer='zeros', kernel_regularizer=None, recurrent_regularizer=None,
                            bias_regularizer=None, activity_regularizer=None, kernel_constraint=None,
-                           recurrent_constraint=None, bias_constraint=None, return_sequences=False, 
+                           recurrent_constraint=None, bias_constraint=None, return_sequences=return_sequences,
                            return_state=False, stateful=False, name=name)
     else:
         return kl.GRU(units=units, 
@@ -751,46 +749,48 @@ def build_keras_model(word_embedding_dims,
 
     item_desc_embedding = kl.Embedding(num_words_item_desc, word_embedding_dims, 
                  weights=[emb_matrix_item_desc], trainable=True, name='item_desc_embedding')
-    item_desc_embedding_dropout = kl.SpatialDropout1D(0.5, name='item_desc_embedding_dropout')
+    item_desc_embedding_dropout = kl.SpatialDropout1D(0.4, name='item_desc_embedding_dropout')
     #item_desc_lstm_1 = kl.CuDNNLSTM(units=200, name='item_desc_lstm_1', return_sequences=True)
-    item_desc_lstm_2 = create_LSTM(units=300, name='item_desc_lstm_2')
-    item_desc_lstm_dropout = kl.Dropout(0.5, name='item_desc_lstm_dropout')
+    item_desc_lstm_2 = kl.Bidirectional(create_LSTM(units=300, return_sequences=True, name='item_desc_lstm_2'))
+    item_desc_lstm_dropout = kl.GlobalMaxPool1D()
+    #item_desc_lstm_dropout = kl.Dropout(0.4, name='item_desc_lstm_dropout')
 
     name_embedding = kl.Embedding(num_words_name, word_embedding_dims, 
                                   weights=[emb_matrix_name], trainable=True, name='name_embedding')
-    name_embedding_dropout = kl.SpatialDropout1D(0.5, name='name_embedding_dropout')
+    name_embedding_dropout = kl.SpatialDropout1D(0.4, name='name_embedding_dropout')
     #name_lstm_1 = kl.CuDNNLSTM(units=100, name='name_lstm_1', return_sequences=True)
-    name_lstm_2 = create_LSTM(units=150, name='name_lstm_2')
-    name_lstm_dropout = kl.Dropout(0.5, name='name_lstm_dropout')
+    name_lstm_2 = kl.Bidirectional(create_LSTM(units=150, return_sequences=True, name='name_lstm_2'))
+    #name_lstm_dropout = kl.Dropout(0.4, name='name_lstm_dropout')
+    name_lstm_dropout = kl.GlobalMaxPool1D()
 
 
     category_embedding = kl.Embedding(num_categories + 1, cat_embedding_dims, name='category_embedding')
-    category_embedding_dropout = kl.Dropout(0.5, name='category_embedding_dropout')
+    category_embedding_dropout = kl.Dropout(0.4, name='category_embedding_dropout')
     category_reshape = kl.Reshape(target_shape=(cat_embedding_dims,), name='category_reshape')
 
     brand_embedding = kl.Embedding(num_brands + 1, cat_embedding_dims, name='brand_embedding')
-    brand_embedding_dropout = kl.Dropout(0.5, name='brand_embedding_dropout')
+    brand_embedding_dropout = kl.Dropout(0.4, name='brand_embedding_dropout')
     brand_reshape = kl.Reshape(target_shape=(cat_embedding_dims,), name='brand_reshape')
 
     input_fusion = kl.Concatenate(axis=1, name='input_fusion')
     fusion_dense_1 = kl.Dense(400, activation='relu', name='fusion_dense_1')
-    fusion_dropout_1 = kl.Dropout(0.5, name='fusion_dropout_1')
+    fusion_dropout_1 = kl.Dropout(0.4, name='fusion_dropout_1')
     fusion_dense_2 = kl.Dense(300, activation='relu', name='fusion_dense_2')
-    fusion_dropout_2 = kl.Dropout(0.5, name='fusion_dropout_2')
+    fusion_dropout_2 = kl.Dropout(0.4, name='fusion_dropout_2')
     fusion_dense_3 = kl.Dense(200, activation='relu', name='fusion_dense_3')
-    fusion_dropout_3 = kl.Dropout(0.5, name='fusion_dropout_3')
+    fusion_dropout_3 = kl.Dropout(0.4, name='fusion_dropout_3')
     fusion_dense_4 = kl.Dense(100, activation='relu', name='fusion_dense_4')
-    fusion_dropout_4 = kl.Dropout(0.5, name='fusion_dropout_4')
+    fusion_dropout_4 = kl.Dropout(0.4, name='fusion_dropout_4')
     fusion_dense_5 = kl.Dense(1, activation='relu', name='fusion_dense_5')
 
     item_desc_output = item_desc_embedding(item_desc_input)
-    #item_desc_output = item_desc_embedding_dropout(item_desc_output)
+    item_desc_output = item_desc_embedding_dropout(item_desc_output)
     #item_desc_output = item_desc_lstm_1(item_desc_output)
     item_desc_output = item_desc_lstm_2(item_desc_output)
     item_desc_output = item_desc_lstm_dropout(item_desc_output)
 
     name_output = name_embedding(name_input)
-    #name_output = name_embedding_dropout(name_output)
+    name_output = name_embedding_dropout(name_output)
     #name_output = name_lstm_1(name_output)
     name_output = name_lstm_2(name_output)
     name_output = name_lstm_dropout(name_output)
@@ -847,6 +847,22 @@ def lr_schedule(ep):
     return lr
 
 
+class Evaluation(Callback):
+    def __init__(self, val_data=(), interval=1):
+        super(Callback, self).__init__()
+
+        self.interval = interval
+        self.X_v, self.y_v = val_data
+
+    def on_epoch_end(self, epoch, logs=None):
+        if epoch % self.interval == 0:
+            y_pred = self.model.predict(self.X_v, verbose=0)
+            msqle = mean_squared_log_error(self.y_v, y_pred)
+            rmsqle = math.sqrt(msqle)
+
+            print(" - val_skl_msqle ({:.6f}), val_skl_rmsqle ({:.6f})".format(msqle, rmsqle))
+
+
 def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, submission):
     x_name_seq_t, x_item_desc_seq_t, x_cat_t, x_brand_t, x_cond_t, x_ship_t, y_t, _ = get_data_packages(
         MerLConfig.TRAIN_PREP_FILE, 
@@ -896,6 +912,7 @@ def execute_training(start_epoch, end_epoch, build_on_model, save_model_as, subm
     lrs_callback = keras.callbacks.LearningRateScheduler(lr_schedule)
 
     callbacks.append(lrs_callback)
+    callbacks.append(Evaluation(val_data=([x_cond_v, x_ship_v, x_cat_v, x_brand_v, x_name_seq_v, x_item_desc_seq_v], y_v), interval=1))
 
     if save_model_as is not None and not submission:
         file = save_model_as + '_{0}_{1}_{2}_{3}'.format(MerLConfig.MV, MerLConfig.OV, MerLConfig.WP, MerLConfig.DP)
@@ -1027,24 +1044,6 @@ def main():
         elif arg == 'item_desc':
             item_desc = True
     
-    if MerLConfig.SUBMISSION_MODE:
-        initialization = True
-        categorization = True
-        embedding = True
-        indexation = True
-        training = True
-        submission = True
-
-        train_set = True
-        val_set = True
-        test_set = False
-        sub_set = True
-
-        category = True
-        brand = True
-        name = True
-        item_desc = True
-
     if (not initialization and not categorization and not embedding and not indexation
         and not training and not test and not submission):
         initialization = True
@@ -1114,7 +1113,7 @@ def main():
 
         logger.info("Data preparation done in %s.", time_it(then, time()))  
 
-    if (not MerLConfig.SUBMISSION_MODE) and (training or test or submission) and (MerLConfig.LOAD_MODEL is not None):
+    if (training or test or submission) and (MerLConfig.LOAD_MODEL is not None):
         model = load_keras_model(model_file=MerLConfig.LOAD_MODEL)
 
     if training:
